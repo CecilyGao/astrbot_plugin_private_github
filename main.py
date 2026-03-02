@@ -26,7 +26,7 @@ KV_LAST_ENTRY_PREFIX = "last_entry_"  # last_entry_{key} -> entry_id
 
 @register(
     "astrbot_plugin_listen_github",
-    "AliveRiver",
+    "aliveriver",
     "通过 RSS 定时获取 GitHub 用户/仓库动态并推送到聊天会话",
     "1.0.0",
     "https://github.com/aliveriver/astrbot_plugin_listen_github",
