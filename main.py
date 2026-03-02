@@ -1,7 +1,7 @@
 import asyncio
 import re
 from datetime import datetime, timezone
-from typing import List, Optional, Tuple
+from typing import List, Optional, Set, Tuple
 
 try:
     from zoneinfo import ZoneInfo
@@ -21,7 +21,11 @@ GITHUB_REPO_FEED = "https://github.com/{repo}/releases.atom"
 GITHUB_REPO_COMMITS_FEED = "https://github.com/{repo}/commits.atom"
 KV_LAST_ENTRY_PREFIX = "last_entry_"
 KV_INITIALIZED_PREFIX = "initialized_"
-MAX_SCAN_ENTRIES = 50  # 扫描窗口硬上限，防止过大
+MAX_SCAN_ENTRIES = 50  # 扫描窗口硬上限
+
+# 合法的 GitHub 用户名/仓库名校验
+RE_USERNAME = re.compile(r"^[a-zA-Z0-9](?:[a-zA-Z0-9._-]*[a-zA-Z0-9])?$")
+RE_REPO = re.compile(r"^[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+$")
 
 
 @register(
@@ -36,7 +40,7 @@ class GitHubListenPlugin(Star):
         super().__init__(context)
         self.config = config
         self.poll_interval: int = max(config.get("poll_interval", 1800), 60)
-        self.max_entries: int = max(config.get("max_entries", 5), 0)  # 0=不限，负数归零
+        self.max_entries: int = max(config.get("max_entries", 5), 0)
         self.cfg_watch_users: List[str] = config.get("watch_users", [])
         self.cfg_watch_repos: List[str] = config.get("watch_repos", [])
         self.cfg_watch_repos_commits: List[str] = config.get("watch_repos_commits", [])
@@ -44,6 +48,8 @@ class GitHubListenPlugin(Star):
         self.cfg_timezone: str = config.get("timezone", "Asia/Shanghai")
         self._poll_task: Optional[asyncio.Task] = None
         self._http_session: Optional[aiohttp.ClientSession] = None
+        self._initialized_keys: Set[str] = set()  # 已成功初始化游标的 kv_key
+        self._config_lock = asyncio.Lock()  # 保护 bound_sessions 并发写
 
     async def initialize(self):
         """插件初始化"""
@@ -87,17 +93,23 @@ class GitHubListenPlugin(Star):
 
     async def _init_cursors(self):
         """为所有监听目标初始化游标，防止首次启动推送历史消息。
-        仅在成功获取并写入游标后才标记已初始化，失败时保留未初始化状态以便下次重试。
+        仅在成功获取并写入游标后才标记已初始化。
         """
         for feed_url, display_name, kv_key in self._build_targets():
+            if kv_key in self._initialized_keys:
+                continue
+            # 检查持久化标记
             init_flag = f"{KV_INITIALIZED_PREFIX}{kv_key}"
             if await self.get_kv_data(init_flag, ""):
+                self._initialized_keys.add(kv_key)
                 continue
+            # 首次：拉取并写入游标
             feed = await self._fetch_feed(feed_url)
             if feed and feed.entries:
                 first_id = feed.entries[0].get("id", feed.entries[0].get("link", ""))
                 await self.put_kv_data(f"{KV_LAST_ENTRY_PREFIX}{kv_key}", first_id)
                 await self.put_kv_data(init_flag, "1")
+                self._initialized_keys.add(kv_key)
                 logger.info(f"[GitHub Listen] 已初始化游标: {kv_key}")
             else:
                 logger.warning(f"[GitHub Listen] 初始化游标失败，将在下次重试: {display_name}")
@@ -108,7 +120,6 @@ class GitHubListenPlugin(Star):
         await asyncio.sleep(10)
         while True:
             try:
-                # 每轮轮询前重试未初始化的游标
                 await self._init_cursors()
                 await self._do_poll()
             except asyncio.CancelledError:
@@ -119,20 +130,25 @@ class GitHubListenPlugin(Star):
             await asyncio.sleep(self.poll_interval)
 
     async def _do_poll(self):
-        """执行一次轮询：拉取所有目标，推送到绑定会话"""
+        """执行一次轮询：仅拉取已初始化的目标，推送到绑定会话"""
         targets = self._build_targets()
         if not targets or not self.cfg_bound_sessions:
             return
 
+        # 只轮询已初始化的目标，未初始化的跳过（等下一轮 _init_cursors 重试）
+        ready_targets = [t for t in targets if t[2] in self._initialized_keys]
+        if not ready_targets:
+            return
+
         # 并发拉取
         results = await asyncio.gather(
-            *[self._fetch_new_entries(t[0], t[2]) for t in targets],
+            *[self._fetch_new_entries(t[0], t[2]) for t in ready_targets],
             return_exceptions=True,
         )
 
         # 并发推送
         send_tasks = []
-        for target, result in zip(targets, results):
+        for target, result in zip(ready_targets, results):
             _, display_name, _ = target
             if isinstance(result, Exception):
                 logger.error(f"[GitHub Listen] 获取 {display_name} 失败: {result}")
@@ -180,7 +196,6 @@ class GitHubListenPlugin(Star):
         last_entry_id = await self.get_kv_data(full_kv_key, "")
 
         new_entries = []
-        # 扫描所有条目直到命中游标，设硬上限防止过大
         scan_limit = MAX_SCAN_ENTRIES if self.max_entries == 0 else max(self.max_entries * 2, MAX_SCAN_ENTRIES)
         for entry in feed.entries[:scan_limit]:
             entry_id = entry.get("id", entry.get("link", ""))
@@ -308,6 +323,16 @@ class GitHubListenPlugin(Star):
         target = parts[0]
         check_type = parts[1].lower() if len(parts) > 1 else None
 
+        # 输入校验
+        if "/" in target:
+            if not RE_REPO.match(target):
+                yield event.plain_result("❌ 仓库格式不正确，应为 owner/repo，如 microsoft/vscode")
+                return
+        else:
+            if not RE_USERNAME.match(target):
+                yield event.plain_result("❌ 用户名格式不正确，仅支持字母、数字、点、连字符和下划线")
+                return
+
         if "/" in target:
             if check_type == "commit":
                 feed_url = GITHUB_REPO_COMMITS_FEED.format(repo=target)
@@ -345,12 +370,13 @@ class GitHubListenPlugin(Star):
     async def gh_bindhere(self, event: AstrMessageEvent):
         """将当前会话绑定为推送目标"""
         umo = event.unified_msg_origin
-        if umo in self.cfg_bound_sessions:
-            yield event.plain_result("⚠️ 当前会话已在绑定列表中。")
-            return
-        self.cfg_bound_sessions.append(umo)
-        self.config["bound_sessions"] = self.cfg_bound_sessions
-        self.config.save_config()
+        async with self._config_lock:
+            if umo in self.cfg_bound_sessions:
+                yield event.plain_result("⚠️ 当前会话已在绑定列表中。")
+                return
+            self.cfg_bound_sessions.append(umo)
+            self.config["bound_sessions"] = self.cfg_bound_sessions
+            self.config.save_config()
         yield event.plain_result(
             f"✅ 已绑定当前会话为推送目标。\n"
             f"会话标识：{umo}\n"
@@ -362,12 +388,13 @@ class GitHubListenPlugin(Star):
     async def gh_unbindhere(self, event: AstrMessageEvent):
         """解绑当前会话"""
         umo = event.unified_msg_origin
-        if umo not in self.cfg_bound_sessions:
-            yield event.plain_result("⚠️ 当前会话不在绑定列表中。")
-            return
-        self.cfg_bound_sessions.remove(umo)
-        self.config["bound_sessions"] = self.cfg_bound_sessions
-        self.config.save_config()
+        async with self._config_lock:
+            if umo not in self.cfg_bound_sessions:
+                yield event.plain_result("⚠️ 当前会话不在绑定列表中。")
+                return
+            self.cfg_bound_sessions.remove(umo)
+            self.config["bound_sessions"] = self.cfg_bound_sessions
+            self.config.save_config()
         yield event.plain_result(
             f"✅ 已解绑当前会话。\n"
             f"剩余 {len(self.cfg_bound_sessions)} 个绑定会话。"

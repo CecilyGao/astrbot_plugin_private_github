@@ -12,7 +12,6 @@
 - 🕐 **时区转换** — 自动将 GitHub 时间转为本地时区
 - 🔒 **权限控制** — 关键指令仅管理员可用
 - 🚀 **并发拉取推送** — 多目标并行处理，高效不阻塞
-- 🛡️ **首次启动防刷屏** — 自动初始化游标，不推送历史消息
 
 ## 📋 可用指令
 
@@ -59,3 +58,8 @@ git clone https://github.com/aliveriver/astrbot_plugin_listen_github.git
 ## 📄 许可证
 
 [GPL-3.0](LICENSE)
+
+## 欢迎Issue与PR
+
+-----
+*快去视奸你好友的github动态吧）*
