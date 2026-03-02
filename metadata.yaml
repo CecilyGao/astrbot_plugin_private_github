@@ -4,3 +4,4 @@ desc: 通过 RSS 定时获取 GitHub 用户公开动态并推送到聊天会话
 version: v1.0.0
 author: AliveRiver
 repo: https://github.com/aliveriver/astrbot_plugin_listen_github
+astrbot_version: ">=4.9.2"

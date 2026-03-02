@@ -1,7 +1,13 @@
 import asyncio
 import json
 import re
+from datetime import datetime, timezone
 from typing import Dict, List, Optional
+
+try:
+    from zoneinfo import ZoneInfo
+except ImportError:
+    from backports.zoneinfo import ZoneInfo
 
 import aiohttp
 import feedparser
@@ -13,6 +19,7 @@ from astrbot.api import logger, AstrBotConfig
 
 GITHUB_USER_FEED = "https://github.com/{username}.atom"
 GITHUB_REPO_FEED = "https://github.com/{repo}/releases.atom"
+GITHUB_REPO_COMMITS_FEED = "https://github.com/{repo}/commits.atom"
 KV_WATCH_LIST = "watch_list"  # dict: {umo: [username, ...]}  (指令动态添加)
 KV_LAST_ENTRY_PREFIX = "last_entry_"  # last_entry_{key} -> entry_id
 
@@ -28,12 +35,14 @@ class GitHubListenPlugin(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
         self.config = config
-        self.poll_interval: int = config.get("poll_interval", 1800)  # 秒
+        self.poll_interval: int = max(config.get("poll_interval", 1800), 60)  # 最低 60 秒
         self.max_entries: int = config.get("max_entries", 5)
         # JSON 配置中的监听列表
         self.cfg_watch_users: List[str] = config.get("watch_users", [])
         self.cfg_watch_repos: List[str] = config.get("watch_repos", [])
+        self.cfg_watch_repos_commits: List[str] = config.get("watch_repos_commits", [])
         self.cfg_bound_sessions: List[str] = config.get("bound_sessions", [])
+        self.cfg_timezone: str = config.get("timezone", "Asia/Shanghai")
         self._poll_task: Optional[asyncio.Task] = None
 
     async def initialize(self):
@@ -42,7 +51,8 @@ class GitHubListenPlugin(Star):
             f"[GitHub Listen] 插件初始化，轮询间隔: {self.poll_interval} 秒，"
             f"每次最多推送: {self.max_entries} 条，"
             f"配置监听用户: {self.cfg_watch_users}，"
-            f"配置监听仓库: {self.cfg_watch_repos}，"
+            f"配置监听仓库(Release): {self.cfg_watch_repos}，"
+            f"配置监听仓库(Commit): {self.cfg_watch_repos_commits}，"
             f"配置绑定会话: {len(self.cfg_bound_sessions)} 个"
         )
         self._poll_task = asyncio.create_task(self._poll_loop())
@@ -70,14 +80,20 @@ class GitHubListenPlugin(Star):
         for user in self.cfg_watch_users:
             cfg_targets.append((
                 GITHUB_USER_FEED.format(username=user),
-                f"👤 {user}",
+                f"user {user}",
                 f"user_{user}",
             ))
         for repo in self.cfg_watch_repos:
             cfg_targets.append((
                 GITHUB_REPO_FEED.format(repo=repo),
-                f"📦 {repo}",
-                f"repo_{repo.replace('/', '_')}",
+                f"📦 {repo} (Release)",
+                f"repo_rel_{repo.replace('/', '_')}",
+            ))
+        for repo in self.cfg_watch_repos_commits:
+            cfg_targets.append((
+                GITHUB_REPO_COMMITS_FEED.format(repo=repo),
+                f"📝 {repo} (Commit)",
+                f"repo_cmt_{repo.replace('/', '_')}",
             ))
 
         # 推送配置中的目标到所有绑定会话
@@ -149,9 +165,9 @@ class GitHubListenPlugin(Star):
             new_entries.append(
                 {
                     "id": entry_id,
-                    "title": entry.get("title", "无标题"),
-                    "link": entry.get("link", ""),
-                    "published": entry.get("published", ""),
+                    "title": entry.get("title", "无标题").strip(),
+                    "link": entry.get("link", "").strip(),
+                    "published": self._convert_time(entry.get("published", "")),
                     "content": self._extract_content(entry),
                 }
             )
@@ -164,15 +180,51 @@ class GitHubListenPlugin(Star):
 
         return new_entries
 
+    def _convert_time(self, time_str: str) -> str:
+        """将 Feed 中的时间字符串转换为用户配置的时区"""
+        if not time_str:
+            return ""
+        try:
+            # GitHub Atom Feed 常见格式: "2026-03-02T01:26:27-08:00" 或 "2026-03-02 01:26:27 -0800"
+            for fmt in (
+                "%Y-%m-%dT%H:%M:%S%z",
+                "%Y-%m-%d %H:%M:%S %z",
+                "%Y-%m-%dT%H:%M:%SZ",
+            ):
+                try:
+                    dt = datetime.strptime(time_str.strip(), fmt)
+                    break
+                except ValueError:
+                    continue
+            else:
+                # feedparser 解析的 time_struct
+                if hasattr(feedparser, '_parse_date') and hasattr(feedparser._parse_date, '__call__'):
+                    pass
+                return time_str  # 无法解析则原样返回
+
+            # 如果没有时区信息，假定 UTC
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+
+            # 转换到用户设定的时区
+            local_tz = ZoneInfo(self.cfg_timezone)
+            dt_local = dt.astimezone(local_tz)
+            return dt_local.strftime("%Y-%m-%d %H:%M:%S")
+        except Exception:
+            return time_str  # 出错时原样返回
+
     @staticmethod
     def _extract_content(entry) -> str:
-        """提取 Feed 条目的内容摘要"""
+        """提取 Feed 条目的内容摘要，清理 HTML 标签和多余空白"""
         content = ""
         if hasattr(entry, "summary"):
             content = entry.summary
         elif hasattr(entry, "content") and entry.content:
             content = entry.content[0].get("value", "")
-        content = re.sub(r"<[^>]+>", "", content).strip()
+        # 去除 HTML 标签
+        content = re.sub(r"<[^>]+>", " ", content)
+        # 合并连续空白字符（空格、换行、制表符）为单个空格
+        content = re.sub(r"\s+", " ", content).strip()
         if len(content) > 200:
             content = content[:200] + "..."
         return content
@@ -382,9 +434,9 @@ class GitHubListenPlugin(Star):
             entries.append(
                 {
                     "id": entry.get("id", ""),
-                    "title": entry.get("title", "无标题"),
-                    "link": entry.get("link", ""),
-                    "published": entry.get("published", ""),
+                    "title": entry.get("title", "无标题").strip(),
+                    "link": entry.get("link", "").strip(),
+                    "published": self._convert_time(entry.get("published", "")),
                     "content": self._extract_content(entry),
                 }
             )
