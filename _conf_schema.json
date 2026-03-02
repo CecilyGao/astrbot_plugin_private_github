@@ -1,0 +1,32 @@
+{
+    "poll_interval": {
+        "description": "轮询间隔（秒）",
+        "type": "int",
+        "default": 1800,
+        "hint": "每隔多少秒检查一次动态，默认 1800 秒（30 分钟），建议不低于 600 秒"
+    },
+    "max_entries": {
+        "description": "每次最多推送条目数",
+        "type": "int",
+        "default": 5,
+        "hint": "单次推送每个用户/仓库最多显示多少条新动态"
+    },
+    "watch_users": {
+        "description": "监听的 GitHub 用户列表",
+        "type": "list",
+        "default": [],
+        "hint": "填写要监听动态的 GitHub 用户名，如 torvalds、octocat"
+    },
+    "watch_repos": {
+        "description": "监听的 GitHub 仓库列表",
+        "type": "list",
+        "default": [],
+        "hint": "填写要监听的仓库，格式为 owner/repo，如 microsoft/vscode、AstrBotDevs/AstrBot"
+    },
+    "bound_sessions": {
+        "description": "绑定的推送会话列表",
+        "type": "list",
+        "default": [],
+        "hint": "填写要推送的会话 UMO，可以通过 /sid 指令获取UMO。可通过 /gh_bindhere 指令在聊天中自动获取并绑定当前会话。"
+    }
+}
