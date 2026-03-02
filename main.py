@@ -1,8 +1,7 @@
 import asyncio
-import json
 import re
 from datetime import datetime, timezone
-from typing import Dict, List, Optional, Tuple
+from typing import List, Optional, Tuple
 
 try:
     from zoneinfo import ZoneInfo
@@ -12,7 +11,7 @@ except ImportError:
 import aiohttp
 import feedparser
 
-from astrbot.api.event import filter, AstrMessageEvent, MessageEventResult
+from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api.event import MessageChain
 from astrbot.api.star import Context, Star, register
 from astrbot.api import logger, AstrBotConfig
@@ -22,6 +21,7 @@ GITHUB_REPO_FEED = "https://github.com/{repo}/releases.atom"
 GITHUB_REPO_COMMITS_FEED = "https://github.com/{repo}/commits.atom"
 KV_LAST_ENTRY_PREFIX = "last_entry_"
 KV_INITIALIZED_PREFIX = "initialized_"
+MAX_SCAN_ENTRIES = 50  # 扫描窗口硬上限，防止过大
 
 
 @register(
@@ -36,7 +36,7 @@ class GitHubListenPlugin(Star):
         super().__init__(context)
         self.config = config
         self.poll_interval: int = max(config.get("poll_interval", 1800), 60)
-        self.max_entries: int = config.get("max_entries", 5)
+        self.max_entries: int = max(config.get("max_entries", 5), 0)  # 0=不限，负数归零
         self.cfg_watch_users: List[str] = config.get("watch_users", [])
         self.cfg_watch_repos: List[str] = config.get("watch_repos", [])
         self.cfg_watch_repos_commits: List[str] = config.get("watch_repos_commits", [])
@@ -86,8 +86,10 @@ class GitHubListenPlugin(Star):
         return targets
 
     async def _init_cursors(self):
-        """为所有监听目标初始化游标，防止首次启动推送历史消息"""
-        for feed_url, _, kv_key in self._build_targets():
+        """为所有监听目标初始化游标，防止首次启动推送历史消息。
+        仅在成功获取并写入游标后才标记已初始化，失败时保留未初始化状态以便下次重试。
+        """
+        for feed_url, display_name, kv_key in self._build_targets():
             init_flag = f"{KV_INITIALIZED_PREFIX}{kv_key}"
             if await self.get_kv_data(init_flag, ""):
                 continue
@@ -95,8 +97,10 @@ class GitHubListenPlugin(Star):
             if feed and feed.entries:
                 first_id = feed.entries[0].get("id", feed.entries[0].get("link", ""))
                 await self.put_kv_data(f"{KV_LAST_ENTRY_PREFIX}{kv_key}", first_id)
-            await self.put_kv_data(init_flag, "1")
-            logger.info(f"[GitHub Listen] 已初始化游标: {kv_key}")
+                await self.put_kv_data(init_flag, "1")
+                logger.info(f"[GitHub Listen] 已初始化游标: {kv_key}")
+            else:
+                logger.warning(f"[GitHub Listen] 初始化游标失败，将在下次重试: {display_name}")
 
     # ==================== 定时轮询 ====================
 
@@ -104,6 +108,8 @@ class GitHubListenPlugin(Star):
         await asyncio.sleep(10)
         while True:
             try:
+                # 每轮轮询前重试未初始化的游标
+                await self._init_cursors()
                 await self._do_poll()
             except asyncio.CancelledError:
                 logger.info("[GitHub Listen] 轮询任务已取消")
@@ -119,7 +125,6 @@ class GitHubListenPlugin(Star):
             return
 
         # 并发拉取
-        keys = [t[2] for t in targets]
         results = await asyncio.gather(
             *[self._fetch_new_entries(t[0], t[2]) for t in targets],
             return_exceptions=True,
@@ -151,11 +156,12 @@ class GitHubListenPlugin(Star):
     # ==================== RSS 获取与解析 ====================
 
     async def _fetch_feed(self, url: str) -> Optional[feedparser.FeedParserDict]:
-        session = self._http_session or aiohttp.ClientSession(
-            timeout=aiohttp.ClientTimeout(total=30)
-        )
+        if not self._http_session or self._http_session.closed:
+            self._http_session = aiohttp.ClientSession(
+                timeout=aiohttp.ClientTimeout(total=30)
+            )
         try:
-            async with session.get(url) as resp:
+            async with self._http_session.get(url) as resp:
                 if resp.status != 200:
                     logger.warning(f"[GitHub Listen] Feed 请求失败: {url} -> HTTP {resp.status}")
                     return None
@@ -174,8 +180,9 @@ class GitHubListenPlugin(Star):
         last_entry_id = await self.get_kv_data(full_kv_key, "")
 
         new_entries = []
-        scan = feed.entries if self.max_entries == 0 else feed.entries[: self.max_entries * 2]
-        for entry in scan:
+        # 扫描所有条目直到命中游标，设硬上限防止过大
+        scan_limit = MAX_SCAN_ENTRIES if self.max_entries == 0 else max(self.max_entries * 2, MAX_SCAN_ENTRIES)
+        for entry in feed.entries[:scan_limit]:
             entry_id = entry.get("id", entry.get("link", ""))
             if entry_id == last_entry_id:
                 break
@@ -183,7 +190,9 @@ class GitHubListenPlugin(Star):
                 "id": entry_id,
                 "title": entry.get("title", "无标题").strip(),
                 "link": entry.get("link", "").strip(),
-                "published": self._convert_time(entry.get("published", "")),
+                "published": self._convert_time(
+                    entry.get("published") or entry.get("updated", "")
+                ),
                 "content": self._extract_content(entry),
             })
 
@@ -281,19 +290,31 @@ class GitHubListenPlugin(Star):
     @filter.command("gh_check")
     @filter.permission_type(filter.PermissionType.ADMIN)
     async def gh_check(self, event: AstrMessageEvent):
-        """立即检查某 GitHub 用户或仓库的最新动态。用法：/gh_check <用户名或owner/repo>"""
-        target = event.message_str.strip()
-        if not target:
+        """立即检查某 GitHub 用户或仓库的最新动态。
+        用法：/gh_check <用户名>          查看用户动态
+              /gh_check <owner/repo>      查看仓库最新 Release
+              /gh_check <owner/repo> commit  查看仓库最新 Commit
+        """
+        parts = event.message_str.strip().split()
+        if not parts:
             yield event.plain_result(
                 "❌ 请提供目标，例如：\n"
-                "  /gh_check torvalds（用户）\n"
-                "  /gh_check microsoft/vscode（仓库）"
+                "  /gh_check torvalds（用户动态）\n"
+                "  /gh_check microsoft/vscode（最新 Release）\n"
+                "  /gh_check microsoft/vscode commit（最新 Commit）"
             )
             return
 
+        target = parts[0]
+        check_type = parts[1].lower() if len(parts) > 1 else None
+
         if "/" in target:
-            feed_url = GITHUB_REPO_FEED.format(repo=target)
-            display_name = f"📦 {target}"
+            if check_type == "commit":
+                feed_url = GITHUB_REPO_COMMITS_FEED.format(repo=target)
+                display_name = f"📝 {target} (Commit)"
+            else:
+                feed_url = GITHUB_REPO_FEED.format(repo=target)
+                display_name = f"📦 {target} (Release)"
         else:
             feed_url = GITHUB_USER_FEED.format(username=target)
             display_name = f"👤 {target}"
@@ -309,10 +330,11 @@ class GitHubListenPlugin(Star):
         check = feed.entries if self.max_entries == 0 else feed.entries[: self.max_entries]
         for entry in check:
             entries.append({
-                "id": entry.get("id", ""),
                 "title": entry.get("title", "无标题").strip(),
                 "link": entry.get("link", "").strip(),
-                "published": self._convert_time(entry.get("published", "")),
+                "published": self._convert_time(
+                    entry.get("published") or entry.get("updated", "")
+                ),
                 "content": self._extract_content(entry),
             })
 

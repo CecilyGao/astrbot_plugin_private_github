@@ -1,26 +1,28 @@
-# AstrBot GitHub 动态监听插件
+# 🔔 AstrBot GitHub 动态监听插件
 
 通过 GitHub 公开的 RSS (Atom Feed) 定时获取用户动态、仓库 Release 和 Commit 信息，自动推送到绑定的聊天会话中。
 
 ## ✨ 功能特性
 
-- **用户动态监听** — Star、Fork、创建仓库、Push 等公开事件
-- **仓库 Release 监听** — 新版本发布提醒
-- **仓库 Commit 监听** — 最新提交推送
-- **定时轮询** — 可自定义轮询间隔（默认 30 分钟）
-- **多会话推送** — 支持绑定多个聊天会话
-- **时区转换** — 自动将 GitHub 时间转为本地时区
-- **权限控制** — 关键指令仅管理员可用
+- 📡 **用户动态监听** — Star、Fork、创建仓库、Push 等公开事件
+- 📦 **仓库 Release 监听** — 新版本发布提醒
+- 📝 **仓库 Commit 监听** — 最新提交推送
+- ⏱️ **定时轮询** — 可自定义轮询间隔（默认 30 分钟，最低 60 秒）
+- 🌐 **多会话推送** — 支持绑定多个聊天会话
+- 🕐 **时区转换** — 自动将 GitHub 时间转为本地时区
+- 🔒 **权限控制** — 关键指令仅管理员可用
+- 🚀 **并发拉取推送** — 多目标并行处理，高效不阻塞
+- 🛡️ **首次启动防刷屏** — 自动初始化游标，不推送历史消息
 
 ## 📋 可用指令
 
 | 指令 | 权限 | 说明 |
 |------|------|------|
-| `/gh_watch <用户名>` | 管理员 | 添加 GitHub 用户到当前会话的监听列表 |
-| `/gh_unwatch <用户名>` | 管理员 | 从当前会话移除监听 |
-| `/gh_list` | 所有人 | 列出全局配置 + 当前会话的所有监听项 |
-| `/gh_check <用户名或owner/repo>` | 管理员 | 立即查看某用户或仓库的最新动态 |
-| `/gh_bindhere` | 管理员 | 将当前会话绑定为全局推送目标 |
+| `/gh_list` | 所有人 | 列出所有监听项和绑定会话数 |
+| `/gh_check <用户名>` | 管理员 | 立即查看某用户的最新动态 |
+| `/gh_check <owner/repo>` | 管理员 | 立即查看某仓库的最新 Release |
+| `/gh_check <owner/repo> commit` | 管理员 | 立即查看某仓库的最新 Commit |
+| `/gh_bindhere` | 管理员 | 将当前会话绑定为推送目标 |
 | `/gh_unbindhere` | 管理员 | 解绑当前会话 |
 
 ## ⚙️ 配置项
@@ -37,16 +39,15 @@
 | `timezone` | string | Asia/Shanghai | 时间显示时区 |
 | `bound_sessions` | list | [] | 推送目标会话（也可用 `/gh_bindhere` 绑定） |
 
-## 🚀 两种监听模式
+## 🚀 快速开始
 
-1. **全局配置模式**：在 WebUI 中填写 `watch_users`、`watch_repos`、`watch_repos_commits`，动态推送到 `bound_sessions` 中的所有会话
-2. **指令模式**：在聊天中使用 `/gh_watch` 添加的用户，仅推送到当前会话
-
-两种模式并行运行，互不冲突。
+1. 安装插件后，在 WebUI 配置中填写要监听的用户或仓库
+2. 在聊天中发送 `/gh_bindhere` 绑定当前会话为推送目标
+3. 插件将按设定间隔自动检查并推送新动态
 
 ## 📦 安装
 
-在 AstrBot 中搜索 `astrbot_plugin_listen_github` 安装，或手动克隆到 `data/plugins/` 目录：
+在 AstrBot 中搜索 `astrbot_plugin_listen_github` 安装，或手动克隆：
 
 ```bash
 cd AstrBot/data/plugins
@@ -58,8 +59,3 @@ git clone https://github.com/aliveriver/astrbot_plugin_listen_github.git
 ## 📄 许可证
 
 [GPL-3.0](LICENSE)
-
-## 欢迎Issue与PR
-
------
-*快去视奸你好友的github动态吧）*
