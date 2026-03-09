@@ -51,8 +51,46 @@ class GitHubListenPlugin(Star):
         self._initialized_keys: Set[str] = set()  # 已成功初始化游标的 kv_key
         self._config_lock = asyncio.Lock()  # 保护 bound_sessions 并发写
 
+    @staticmethod
+    def _normalize_watch_list(items: List[str], item_type: str) -> List[str]:
+        """规范化监听列表：去空白、去重、过滤非法项。"""
+        normalized: List[str] = []
+        seen = set()
+        for item in items or []:
+            if not isinstance(item, str):
+                continue
+            value = item.strip()
+            if not value:
+                continue
+            is_valid = RE_REPO.match(value) if item_type == "repo" else RE_USERNAME.match(value)
+            if not is_valid:
+                logger.warning(f"[GitHub Listen] 跳过非法监听项({item_type}): {item}")
+                continue
+            key = value.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            normalized.append(value)
+        return normalized
+
+    @staticmethod
+    def _parse_check_args(message_text: str) -> List[str]:
+        """解析 /gh_check 参数，兼容 message_str 包含命令本体的场景。"""
+        tokens = message_text.strip().split()
+        if not tokens:
+            return []
+        cmd = tokens[0].split("@", 1)[0].lower()
+        if cmd in {"/gh_check", "gh_check"}:
+            return tokens[1:]
+        return tokens
+
     async def initialize(self):
         """插件初始化"""
+        # 规范化配置，避免因空白/非法值导致 URL 404 或重复监听
+        self.cfg_watch_users = self._normalize_watch_list(self.cfg_watch_users, "user")
+        self.cfg_watch_repos = self._normalize_watch_list(self.cfg_watch_repos, "repo")
+        self.cfg_watch_repos_commits = self._normalize_watch_list(self.cfg_watch_repos_commits, "repo")
+
         logger.info(
             f"[GitHub Listen] 插件初始化，轮询间隔: {self.poll_interval} 秒，"
             f"监听用户: {self.cfg_watch_users}，"
@@ -310,7 +348,7 @@ class GitHubListenPlugin(Star):
               /gh_check <owner/repo>      查看仓库最新 Release
               /gh_check <owner/repo> commit  查看仓库最新 Commit
         """
-        parts = event.message_str.strip().split()
+        parts = self._parse_check_args(event.message_str)
         if not parts:
             yield event.plain_result(
                 "❌ 请提供目标，例如：\n"
