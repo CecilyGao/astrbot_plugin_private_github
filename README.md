@@ -12,6 +12,8 @@
 - 🕐 **时区转换** — 自动将 GitHub 时间转为本地时区
 - 🔒 **权限控制** — 关键指令仅管理员可用
 - 🚀 **并发拉取推送** — 多目标并行处理，高效不阻塞
+- 🛡️ **输入校验** — 用户名/仓库名合法性检查，防止无效请求
+- 🔐 **并发安全** — 配置写入加锁，避免竞态条件
 
 ## 📋 可用指令
 
@@ -30,19 +32,20 @@
 
 | 配置项 | 类型 | 默认值 | 说明 |
 |--------|------|--------|------|
-| `poll_interval` | int | 1800 | 轮询间隔（秒），最低 60 秒 |
+| `poll_interval` | int | 1800 | 轮询间隔（秒），建议不低于 600 秒 |
 | `max_entries` | int | 5 | 每次推送的最大条目数，设为 0 不限制 |
 | `watch_users` | list | [] | 监听的 GitHub 用户名列表 |
 | `watch_repos` | list | [] | 监听 Release 的仓库（`owner/repo` 格式） |
 | `watch_repos_commits` | list | [] | 监听 Commit 的仓库（`owner/repo` 格式） |
 | `timezone` | string | Asia/Shanghai | 时间显示时区 |
-| `bound_sessions` | list | [] | 推送目标会话（也可用 `/gh_bindhere` 绑定） |
+| `bound_sessions` | list | [] | 推送目标会话（也可用 `/gh_bindhere` 绑定，或通过 `/sid` 获取 UMO 手动填写） |
 
 ## 🚀 快速开始
 
 1. 安装插件后，在 WebUI 配置中填写要监听的用户或仓库
 2. 在聊天中发送 `/gh_bindhere` 绑定当前会话为推送目标
 3. 插件将按设定间隔自动检查并推送新动态
+4. 使用 `/gh_check <目标>` 可随时手动查看最新动态
 
 ## 📦 安装
 
@@ -55,11 +58,15 @@ git clone https://github.com/aliveriver/astrbot_plugin_listen_github.git
 
 **要求**：AstrBot >= 4.9.2
 
+## 📄 更新日志
+
+详见 [CHANGELOG.md](CHANGELOG.md)
+
 ## 📄 许可证
 
 [GPL-3.0](LICENSE)
 
-## 欢迎Issue与PR
+## 欢迎 Issue 与 PR
 
 -----
-*快去视奸你好友的github动态吧）*
+*快去视奸你好友的 GitHub 动态吧）*

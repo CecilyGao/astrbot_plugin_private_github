@@ -32,7 +32,7 @@ RE_REPO = re.compile(r"^[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+$")
     "astrbot_plugin_listen_github",
     "aliveriver",
     "通过 RSS 定时获取 GitHub 用户/仓库动态并推送到聊天会话",
-    "1.0.0",
+    "1.0.1",
     "https://github.com/aliveriver/astrbot_plugin_listen_github",
 )
 class GitHubListenPlugin(Star):
