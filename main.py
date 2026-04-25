@@ -192,11 +192,11 @@ class GitHubPrivateListenPlugin(Star):
 
     @staticmethod
     def _extract_cursor_from_entry(entry: Dict[str, Any], item_type: str) -> str:
-        if item_type == "issue":
+        if item_type == "issue" or item_type == "issues":
             return str(entry.get("id", ""))
-        elif item_type == "commit":
+        elif item_type == "commit" or item_type == "commits":
             return entry.get("sha", "")
-        elif item_type == "release":
+        elif item_type == "release" or item_type == "releases":
             return str(entry.get("id", ""))
         elif item_type == "project":
             # 对于项目，使用 item 的 id 作为游标
@@ -229,10 +229,8 @@ class GitHubPrivateListenPlugin(Star):
             body = entry.get("body", "") or ""
             return f"{name}: {body[:max_len]}".strip()
         elif event_type == "project":
-            # 项目项的内容: 标题 + 类型
-            content = entry.get("title", "")
-            item_type = entry.get("item_type", "")
-            return f"[{item_type}] {content[:max_len]}"
+            # 项目项暂不提取详细内容，避免 GraphQL 复杂结构
+            return ""
         return ""
 
     # ==================== GitHub API 请求 ====================
@@ -317,7 +315,7 @@ class GitHubPrivateListenPlugin(Star):
         if self.max_entries > 0 and len(new_entries) > self.max_entries:
             new_entries = new_entries[:self.max_entries]
 
-        if new_entries:
+        if new_entries and items:
             latest_cursor = self._extract_cursor_from_entry(items[0], event_type)
             await self.put_kv_data(full_cursor_key, latest_cursor)
         return new_entries
@@ -372,15 +370,14 @@ class GitHubPrivateListenPlugin(Star):
         return None
 
     async def _fetch_project_items(self, org: str, number: int, first: int = 50) -> List[Dict]:
-        """获取项目中的 items，按 updatedAt 降序"""
+        """获取项目中的 items，手动按 updatedAt 降序排序（不使用 orderBy 以避免 schema 错误）"""
         query = """
         query($org: String!, $number: Int!, $first: Int!) {
           organization(login: $org) {
             projectV2(number: $number) {
-              items(first: $first, orderBy: {field: UPDATED_AT, direction: DESC}) {
+              items(first: $first) {
                 nodes {
                   id
-                  title
                   createdAt
                   updatedAt
                   content {
@@ -397,29 +394,6 @@ class GitHubPrivateListenPlugin(Star):
                     }
                     ... on DraftIssue {
                       title
-                      url
-                    }
-                  }
-                  fieldValues(first: 10) {
-                    nodes {
-                      ... on ProjectV2ItemFieldTextValue {
-                        text
-                        field {
-                          name
-                        }
-                      }
-                      ... on ProjectV2ItemFieldDateValue {
-                        date
-                        field {
-                          name
-                        }
-                      }
-                      ... on ProjectV2ItemFieldSingleSelectValue {
-                        name
-                        field {
-                          name
-                        }
-                      }
                     }
                   }
                 }
@@ -439,6 +413,8 @@ class GitHubPrivateListenPlugin(Star):
         if not project:
             return []
         items = project.get("items", {}).get("nodes", [])
+        # 手动按 updatedAt 降序排序，确保最新更新的在前
+        items.sort(key=lambda x: x.get("updatedAt", ""), reverse=True)
         return items
 
     async def _fetch_new_project_entries(self, org: str, number: int) -> List[Dict]:
@@ -469,12 +445,11 @@ class GitHubPrivateListenPlugin(Star):
         return new_entries
 
     def _build_project_entry_dict(self, item: Dict, org: str, number: int) -> Dict:
-        """将 GraphQL 返回的项目 item 转为统一格式"""
+        """将 GraphQL 返回的项目 item 转为统一格式（不包含复杂字段）"""
         content = item.get("content")
         if not content:
             return {}
 
-        # 确定 item 类型和链接
         typename = content.get("__typename")
         if typename == "Issue":
             title = content.get("title", "无标题")
@@ -488,35 +463,21 @@ class GitHubPrivateListenPlugin(Star):
             number_str = f"#{content.get('number', '')}"
         elif typename == "DraftIssue":
             title = content.get("title", "无标题")
-            url = content.get("url", "")
+            url = ""  # DraftIssue 没有 url 字段
             item_type = "Draft Issue"
             number_str = ""
         else:
-            title = item.get("title", "未知项目卡片")
+            title = "未知卡片"
             url = ""
             item_type = "Card"
             number_str = ""
 
-        # 附加字段值信息
-        field_values = []
-        for fv in item.get("fieldValues", {}).get("nodes", []):
-            if "text" in fv:
-                field_values.append(f"{fv['field']['name']}: {fv['text']}")
-            elif "date" in fv:
-                field_values.append(f"{fv['field']['name']}: {fv['date']}")
-            elif "name" in fv:
-                field_values.append(f"{fv['field']['name']}: {fv['name']}")
-        field_str = ", ".join(field_values) if field_values else ""
-
         display_title = f"[Project {org}/{number}] {item_type} {number_str}: {title}"
-        if field_str:
-            display_title += f" [{field_str}]"
-
         return {
             "title": display_title,
             "link": url,
             "published": self._convert_time(item.get("updatedAt", item.get("createdAt", ""))),
-            "content": self._extract_content(item, "project"),
+            "content": "",  # 暂不提取字段值
             "id": item.get("id", ""),
             "type": "project_item"
         }
@@ -749,6 +710,26 @@ class GitHubPrivateListenPlugin(Star):
 
         else:
             yield event.plain_result("❌ 第二个参数必须是 repo 或 project")
+
+    @filter.command("ghp_pushnow")
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    async def ghp_pushnow(self, event: AstrMessageEvent):
+        """立即执行一次全局推送（检查所有监听项，并向绑定会话发送新动态）"""
+        if not self.github_token:
+            yield event.plain_result("❌ 未配置 github_token，无法执行推送")
+            return
+        if not self.cfg_bound_sessions:
+            yield event.plain_result("⚠️ 没有绑定的会话，请先使用 /ghp_bindhere 绑定")
+            return
+
+        yield event.plain_result("🔄 正在立即检查所有监听项并推送...")
+        try:
+            await self._init_cursors()
+            await self._do_poll()
+            yield event.plain_result("✅ 推送完成（如有新动态已发送）")
+        except Exception as e:
+            logger.error(f"[Private GitHub] 手动推送失败: {e}")
+            yield event.plain_result(f"❌ 推送过程中发生错误: {e}")
 
     @filter.command("ghp_bindhere")
     @filter.permission_type(filter.PermissionType.ADMIN)
