@@ -1,9 +1,9 @@
 {
     "github_token": {
-        "description": "GitHub Personal Access Token (需具有 repo、read:org、project 权限)",
+        "description": "GitHub Personal Access Token",
         "type": "string",
         "default": "",
-        "hint": "用于访问私有仓库和组织项目，如 ghp_xxxxxxxxxxxx"
+        "hint": "用于访问私有仓库和组织项目，格式ghp_xxxxxxxxxxxx，需具有 repo、read:org、project 权限"
     },
     "poll_interval": {
         "description": "轮询间隔（秒）",
@@ -27,7 +27,7 @@
         "description": "监听的 GitHub 组织项目 (Projects v2)",
         "type": "list",
         "default": [],
-        "hint": "格式为 'org/project_number'，项目编号在项目 URL 中查看，例如 'my-org/1'。将监听项目中新创建的卡片（Issue、PR、Draft Issue）"
+        "hint": "格式为 'org/project_number'，项目编号在项目 URL 中查看，例如 'nju-mc-org/4'。将推送项目中新创建的卡片（Issue、PR、Draft Issue）"
     },
     "timezone": {
         "description": "时区",
@@ -39,6 +39,6 @@
         "description": "绑定的推送会话列表",
         "type": "list",
         "default": [],
-        "hint": "填写要推送的会话 UMO，可通过 /ghp_bindhere 指令自动绑定当前会话"
+        "hint": "填写要推送的会话 UMO，可通过 ghp_bindhere 指令自动绑定当前会话"
     }
 }
