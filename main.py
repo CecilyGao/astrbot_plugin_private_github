@@ -82,8 +82,8 @@ class GitHubPrivateListenPlugin(Star):
         # 会话订阅数据结构:
         # {
         #   "session_origin": [
-        #       {"type": "repo", "repo": "owner/repo", "event": "issues", "cursor": "xxx"},
-        #       {"type": "project", "org": "org", "number": 1, "cursor": "yyy"}
+        #       {"type": "repo", "repo": "owner/repo", "event": "issues"},
+        #       {"type": "project", "org": "org", "number": 1}
         #   ]
         # }
         self.subscriptions: Dict[str, List[Dict]] = {}
@@ -102,9 +102,7 @@ class GitHubPrivateListenPlugin(Star):
         try:
             with open(self.subs_file, "r", encoding="utf-8") as f:
                 data = json.load(f)
-            # 兼容旧格式：如果是 list，转为 dict
             if isinstance(data, list):
-                # 旧版 bound_sessions 迁移，将其订阅项视为全局默认订阅？但旧版没有具体订阅项，忽略。
                 self.subscriptions = {}
             else:
                 self.subscriptions = data
@@ -116,7 +114,6 @@ class GitHubPrivateListenPlugin(Star):
     def _save_subscriptions(self):
         """保存订阅数据（不含 cursor）"""
         try:
-            # 深拷贝一份，排除 cursor 字段
             to_save = {}
             for session, items in self.subscriptions.items():
                 to_save[session] = []
@@ -160,7 +157,6 @@ class GitHubPrivateListenPlugin(Star):
                     await self._set_cursor(session, sub, cursor)
                     logger.info(f"[Private GitHub] 初始化游标成功: {self._get_cursor_key(session, sub)} -> {cursor[:20]}...")
                     return
-            # 如果没有获取到最新条目（空项目/仓库），设置一个占位符避免重复拉取全部历史
             await self._set_cursor(session, sub, "__EMPTY__")
             logger.warning(f"[Private GitHub] 无法获取最新条目，设置占位游标: {self._get_cursor_key(session, sub)}")
         except Exception as e:
@@ -182,7 +178,6 @@ class GitHubPrivateListenPlugin(Star):
             },
             timeout=aiohttp.ClientTimeout(total=30)
         )
-        # 为所有已存在的订阅初始化游标（如果尚未初始化）
         await self._ensure_all_cursors()
         self._poll_task = asyncio.create_task(self._poll_loop())
 
@@ -305,12 +300,12 @@ class GitHubPrivateListenPlugin(Star):
             return data[0]
         return None
 
-    async def _fetch_new_repo_entries(self, repo: str, event_type: str, last_cursor: str) -> List[Dict]:
+    async def _fetch_new_repo_entries(self, repo: str, event_type: str, last_cursor: str) -> Tuple[List[Dict], str]:
         per_page = MAX_SCAN_ENTRIES
         url = self._build_repo_api_url(repo, event_type, per_page=per_page)
         items = await self._rest_api_get(url)
         if not items:
-            return []
+            return [], last_cursor
 
         new_entries = []
         for item in items:
@@ -423,10 +418,10 @@ class GitHubPrivateListenPlugin(Star):
         items.sort(key=lambda x: x.get("updatedAt", ""), reverse=True)
         return items
 
-    async def _fetch_new_project_entries(self, org: str, number: int, last_cursor: str) -> List[Dict]:
+    async def _fetch_new_project_entries(self, org: str, number: int, last_cursor: str) -> Tuple[List[Dict], str]:
         items = await self._fetch_project_items(org, number, first=MAX_SCAN_ENTRIES)
         if not items:
-            return []
+            return [], last_cursor
 
         new_entries = []
         for item in items:
@@ -500,8 +495,6 @@ class GitHubPrivateListenPlugin(Star):
         if not self.github_token:
             return
 
-        # 收集每个会话中所有订阅的待推送消息
-        # 结构: { session: [消息文本] }
         messages_by_session: Dict[str, List[str]] = {}
 
         for session, items in list(self.subscriptions.items()):
@@ -509,11 +502,9 @@ class GitHubPrivateListenPlugin(Star):
                 try:
                     last_cursor = await self._get_cursor(session, sub)
                     if not last_cursor:
-                        # 未初始化，尝试初始化（通常已在启动时完成，但以防订阅后未重启）
                         await self._init_subscription_cursor(session, sub)
                         continue
                     if last_cursor == "__EMPTY__":
-                        # 空占位，跳过
                         continue
 
                     if sub["type"] == "repo":
@@ -526,7 +517,6 @@ class GitHubPrivateListenPlugin(Star):
                         )
 
                     if new_entries:
-                        # 格式化消息
                         if sub["type"] == "repo":
                             msg = self._format_repo_entries(sub["repo"], sub["event"], new_entries)
                         else:
@@ -534,13 +524,11 @@ class GitHubPrivateListenPlugin(Star):
                         if msg:
                             messages_by_session.setdefault(session, []).append(msg)
 
-                        # 更新游标
-                        if new_cursor and new_cursor != last_cursor:
-                            await self._set_cursor(session, sub, new_cursor)
+                    if new_cursor and new_cursor != last_cursor:
+                        await self._set_cursor(session, sub, new_cursor)
                 except Exception as e:
                     logger.error(f"[Private GitHub] 处理订阅 {sub} 失败: {e}")
 
-        # 发送消息
         for session, msg_list in messages_by_session.items():
             full_msg = "\n\n".join(msg_list)
             chain = MessageChain().message(full_msg)
@@ -584,6 +572,39 @@ class GitHubPrivateListenPlugin(Star):
             lines.append("")
         return "\n".join(lines)
 
+    @staticmethod
+    def _format_single_check_repo(repo: str, event_type: str, entries: List[Dict]) -> str:
+        type_icon = {
+            "issues": "🐛",
+            "commits": "📝",
+            "releases": "📦"
+        }.get(event_type, "🔔")
+        lines = [f"{type_icon} 仓库 {repo} 最近的 {event_type} 动态：\n"]
+        for i, entry in enumerate(entries, 1):
+            lines.append(f"  {i}. {entry['title']}")
+            if entry["published"]:
+                lines.append(f"     🕐 {entry['published']}")
+            if entry["content"]:
+                lines.append(f"     📝 {entry['content']}")
+            if entry["link"]:
+                lines.append(f"     🔗 {entry['link']}")
+            lines.append("")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _format_single_check_project(project_id: str, entries: List[Dict]) -> str:
+        lines = [f"📌 项目 {project_id} 最近的卡片：\n"]
+        for i, entry in enumerate(entries, 1):
+            lines.append(f"  {i}. {entry['title']}")
+            if entry["published"]:
+                lines.append(f"     🕐 {entry['published']}")
+            if entry["content"]:
+                lines.append(f"     📝 {entry['content']}")
+            if entry["link"]:
+                lines.append(f"     🔗 {entry['link']}")
+            lines.append("")
+        return "\n".join(lines)
+
     # ==================== 订阅管理指令 ====================
 
     async def _add_subscription(self, event: AstrMessageEvent, sub_type: str, *args):
@@ -601,7 +622,6 @@ class GitHubPrivateListenPlugin(Star):
             if event_type not in ("issues", "commits", "releases"):
                 yield event.plain_result("❌ 事件类型必须为 issues / commits / releases 之一")
                 return
-            # 检查是否已订阅
             for sub in self.subscriptions.get(session, []):
                 if sub.get("type") == "repo" and sub["repo"] == repo and sub["event"] == event_type:
                     yield event.plain_result(f"⚠️ 当前会话已订阅 {repo} 的 {event_type} 动态")
@@ -626,15 +646,11 @@ class GitHubPrivateListenPlugin(Star):
             yield event.plain_result("❌ 未知订阅类型")
             return
 
-        # 保存订阅
         if session not in self.subscriptions:
             self.subscriptions[session] = []
         self.subscriptions[session].append(new_sub)
         self._save_subscriptions()
-
-        # 初始化游标（不会立即推送旧数据）
         await self._init_subscription_cursor(session, new_sub)
-
         yield event.plain_result(f"✅ 已成功订阅：{self._format_sub(new_sub)}")
 
     @filter.command("ghp_subscribe")
@@ -671,7 +687,6 @@ class GitHubPrivateListenPlugin(Star):
             return
 
         if index is None:
-            # 显示订阅列表供选择
             msg = "📋 当前会话的订阅列表：\n"
             for i, sub in enumerate(items, 1):
                 msg += f"{i}. {self._format_sub(sub)}\n"
@@ -688,9 +703,8 @@ class GitHubPrivateListenPlugin(Star):
             if not items:
                 del self.subscriptions[session]
             self._save_subscriptions()
-            # 可选：删除游标 KV 数据（保留也可）
             key = self._get_cursor_key(session, removed)
-            await self.put_kv_data(key, "")  # 清空
+            await self.put_kv_data(key, "")
             yield event.plain_result(f"✅ 已取消订阅：{self._format_sub(removed)}")
         except ValueError:
             yield event.plain_result("❌ 序号必须为数字")
@@ -717,7 +731,6 @@ class GitHubPrivateListenPlugin(Star):
         else:
             return f"项目 {sub['org']}/{sub['number']} 的卡片动态"
 
-    # 可选：提供手动立即检查所有订阅的指令（管理员）
     @filter.command("ghp_pushnow")
     @filter.permission_type(filter.PermissionType.ADMIN)
     async def ghp_pushnow(self, event: AstrMessageEvent):
@@ -733,7 +746,90 @@ class GitHubPrivateListenPlugin(Star):
             logger.error(f"[Private GitHub] 手动推送失败: {e}")
             yield event.plain_result(f"❌ 推送过程中发生错误: {e}")
 
-    # 保留旧的兼容指令（可选）
+    @filter.command("ghp_check")
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    async def ghp_check(self, event: AstrMessageEvent):
+        """手动检查指定仓库或项目的最新动态（不推送，仅查看）
+        用法：
+          /ghp_check repo owner/repo issues|commits|releases
+          /ghp_check project org/number
+        """
+        if not is_user_allowed(self, event):
+            yield event.plain_result("❌ 你没有权限使用此指令")
+            return
+
+        parts = event.message_str.strip().split()
+        if len(parts) < 3:
+            yield event.plain_result(
+                "❌ 用法错误，示例：\n"
+                "  /ghp_check repo nju-mc-org/server_document issues\n"
+                "  /ghp_check project my-org/1"
+            )
+            return
+
+        sub_type = parts[1].lower()
+        if sub_type == "repo":
+            if len(parts) < 4:
+                yield event.plain_result("用法: /ghp_check repo <owner/repo> <issues|commits|releases>")
+                return
+            repo = parts[2]
+            event_type = parts[3].lower()
+            if not RE_REPO.match(repo) or event_type not in ("issues", "commits", "releases"):
+                yield event.plain_result("❌ 仓库格式或事件类型错误")
+                return
+
+            yield event.plain_result(f"🔄 正在获取 {repo} 的 {event_type} 动态...")
+            url = self._build_repo_api_url(repo, event_type, per_page=self.max_entries or 10)
+            items = await self._rest_api_get(url)
+            if items is None:
+                yield event.plain_result("❌ 无法获取数据，请检查仓库名及 token 权限")
+                return
+
+            entries = []
+            for item in items[:self.max_entries or 10]:
+                entry = self._build_repo_entry_dict(item, event_type)
+                if entry:
+                    entries.append(entry)
+
+            if not entries:
+                yield event.plain_result(f"🔍 仓库 {repo} 暂无最近的 {event_type} 动态。")
+            else:
+                msg = self._format_single_check_repo(repo, event_type, entries)
+                yield event.plain_result(msg)
+
+        elif sub_type == "project":
+            if len(parts) < 3:
+                yield event.plain_result("用法: /ghp_check project <org/number>")
+                return
+            proj_str = parts[2]
+            match = RE_PROJECT_ITEM.match(proj_str)
+            if not match:
+                yield event.plain_result("❌ 项目格式错误，应为 org/number")
+                return
+            org, num = match.group(1), int(match.group(2))
+
+            yield event.plain_result(f"🔄 正在获取项目 {org}/{num} 的最新卡片...")
+            items = await self._fetch_project_items(org, num, first=self.max_entries or 10)
+            if not items:
+                yield event.plain_result("❌ 无法获取项目数据，请检查组织名、项目编号及 token 权限")
+                return
+
+            entries = []
+            for item in items[:self.max_entries or 10]:
+                entry = self._build_project_entry_dict(item, org, num)
+                if entry:
+                    entries.append(entry)
+
+            if not entries:
+                yield event.plain_result(f"🔍 项目 {org}/{num} 暂无最近的卡片动态。")
+            else:
+                msg = self._format_single_check_project(f"{org}/{num}", entries)
+                yield event.plain_result(msg)
+
+        else:
+            yield event.plain_result("❌ 第二个参数必须是 repo 或 project")
+
+    # 兼容旧指令
     @filter.command("ghp_list")
     async def ghp_list(self, event: AstrMessageEvent):
         """兼容旧指令，现在推荐使用 ghp_list_subs 查看本会话订阅"""
