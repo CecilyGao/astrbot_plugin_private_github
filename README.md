@@ -30,14 +30,13 @@
 ### 指令示例
 
 ```
-ghp_check repo AstrBotDevs/AstrBot issues —— 视奸 Astrbot 团队收到的小纸条
+ghp_check repo AstrBotDevs/AstrBot issues —— ~~视奸~~观察 Astrbot 团队收到的小纸条
 
-ghp_check repo AstrBotDevs/AstrBot commits —— 视奸 Astrbot 团队提交了什么修改
+ghp_check repo AstrBotDevs/AstrBot commits —— ~~视奸~~观察 Astrbot 团队提交了什么修改
 
-ghp_check repo AstrBotDevs/AstrBot releases —— 视奸 Astrbot 新版本
+ghp_check repo AstrBotDevs/AstrBot releases —— ~~视奸~~观察 Astrbot 新版本
 
-ghp_check project AstrBotDevs/1 —— 视奸 Astrbot 团队的1号项目动态
-
+ghp_check project AstrBotDevs/1 —— ~~视奸~~观察 Astrbot 团队的1号项目动态
 ```
 
 ## ⚙️ 配置项
