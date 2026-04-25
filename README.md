@@ -2,11 +2,11 @@
 
 **只要你的GitHub Personal Access Token有权限就能视奸别人的private仓库，赶快看看好闺蜜在搞什么名堂😈**
 
-通过 GitHub REST API 和 GraphQL API 定时获取私有仓库及组织项目（Projects v2）的动态，自动推送到绑定的聊天会话。支持 Personal Access Token 认证，可用于私有仓库、内部项目看板的实时监控。
+通过 GitHub REST API 和 GraphQL API 定时获取私有仓库及组织项目（Projects v2）的动态，自动推送到绑定的聊天会话。支持 Personal Access Token 认证，可用于**公开**仓库（Public Repository）、**私有**仓库（Private Repository）、项目动态（Projects）的实时监控。
 
 ## ✨ 功能特性
 
-- 📦 **私有仓库监听** — 支持 `Issues`、`Commits`、`Releases` 事件
+- 📦 **仓库监听** — 支持 `Issues`、`Commits`、`Releases` 事件
 - 📌 **组织项目监听 (Projects v2)** — 自动检测项目中新增/更新的卡片（Issue / PR / Draft Issue）
 - 🔐 **Token 认证** — 使用 GitHub Personal Access Token 访问私有资源
 - ⏱️ **定时轮询** — 可自定义轮询间隔（默认 30 分钟，最低 60 秒）
@@ -72,6 +72,7 @@ ghp_check project AstrBotDevs/1 —— 视奸 Astrbot 团队的1号项目动态
     "bound_sessions": []
 }
 ```
+
 ## 👥 贡献指南
 
 -🌟 Star 这个项目！（点右上角的星星，感谢支持！）
@@ -84,11 +85,21 @@ ghp_check project AstrBotDevs/1 —— 视奸 Astrbot 团队的1号项目动态
 
 ## 🙏 致谢
 
-- 😋 感谢 [aliveriver](https://github.com/aliveriver) 的 [astrbot_plugin_listen_github](https://github.com/aliveriver/astrbot_plugin_listen_github) 插件，为本项目提供了架构参考和灵感。建议搭配食用，就能视奸遍天下了。
+- 😋 感谢 [aliveriver](https://github.com/aliveriver) 的 [astrbot_plugin_listen_github](https://github.com/aliveriver/astrbot_plugin_listen_github) 插件，为本项目提供了架构参考和灵感。建议搭配食用，~~就能视奸遍天下了。~~
 
 ## ⚠️ 注意事项
 
 1. **Token 权限要求**：Personal Access Token 必须勾选 `repo`（完全控制私有仓库）、`read:org`（读取组织信息）和 `project`（访问项目）。如果组织启用了 SAML SSO，需要先授权该 Token。
+
+公开仓库不受限制，主要是**私有仓库你要有权限访问**。可以用 curl -H "Authorization: token <你的token>" "<你要推送的仓库url>" 验证token是否有权限，有效的话会返回访问记录。
+
+例如，我使用
+
+```bash
+curl -H "Authorization: token ghp_1145141919810" "https://api.github.com/repos/xxxx/xxxxxx/issues"
+```
+
+返回了该仓库的 issues，则我的 token 是有权限的，可以放心填在配置里。
 
 2. **项目编号获取**：组织项目的编号请在浏览器地址栏查看，例如 `https://github.com/orgs/nju-mc-org/projects/4` 中的 `4` 即为项目编号。配置时写入 `nju-mc-org/4`。
 
@@ -99,3 +110,5 @@ ghp_check project AstrBotDevs/1 —— 视奸 Astrbot 团队的1号项目动态
 5. **Draft Issue 无法提供链接**：GitHub GraphQL API 中的 Draft Issue 没有 `url` 字段，因此推送时不会附带链接，需要用户直接在项目网页中查看。
 
 6. **合法合规使用**：请确保使用本插件遵守 GitHub 服务条款及适用的法律法规。不得有利用本插件对其他用户造成侵权、对 GitHub API 进行高频请求、爬取数据或任何可能对 GitHub 服务造成压力的行为。用户应自行承担因滥用产生的责任。
+
+~~出问题不要把我供出来，我改这个插件的初衷是为社团私有的看板做推送宣传，不是搞事的,这是我的免责声明喵😭~~
