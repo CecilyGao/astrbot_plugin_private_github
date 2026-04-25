@@ -17,12 +17,13 @@
 
 | 指令 | 权限 | 说明 |
 |------|------|------|
-| `ghp_check repo <owner/repo> <issues\|commits\|releases>` | 管理员 | 立即查看某仓库的最新动态 |
-| `ghp_check project <org/number>` | 管理员 | 立即查看某组织项目的最新卡片 |
+| `ghp_check repo <owner/repo> <issues\|commits\|releases>` | 管理员 | 当前会话立即查看某仓库的最新动态 |
+| `ghp_check project <org/number>` | 管理员 | 当前会话立即查看某组织项目的最新卡片 |
 | `ghp_subscribe repo <owner/repo> <issues\|commits\|releases>` | 白名单成员或管理员 | 订阅仓库动态 |
 | `ghp_subscribe project <org/number>` | 同上 | 订阅组织项目卡片 |
 | `ghp_unsubscribe <序号>` | 同上 | 取消当前会话中指定序号的订阅 |
 | `ghp_list_subs` | 同上 | 列出当前会话的所有订阅 |
+| `ghp_pushnow` | 管理员 | 立即执行一次**全局**检查并推送**所有会话**的新动态 |
 | ~~`ghp_list`~~ | 所有人 | 已废弃，请用 `ghp_list_subs` |
 | ~~`ghp_bindhere`~~ | 管理员 | 已废弃，现在每个会话自动独立管理 |
 
