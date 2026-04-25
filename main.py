@@ -1,5 +1,7 @@
 import asyncio
 import re
+import os
+import json
 from datetime import datetime, timezone
 from typing import List, Optional, Tuple, Dict, Any
 
@@ -9,11 +11,9 @@ except ImportError:
     from backports.zoneinfo import ZoneInfo
 
 import aiohttp
-import json
-
 from astrbot.api.event import filter, AstrMessageEvent
 from astrbot.api.event import MessageChain
-from astrbot.api.star import Context, Star, register
+from astrbot.api.star import Context, Star, register, StarTools
 from astrbot.api import logger, AstrBotConfig
 
 # GitHub API
@@ -22,24 +22,43 @@ GRAPHQL_API = "https://api.github.com/graphql"
 
 # 游标存储前缀
 KV_LAST_CURSOR_PREFIX = "ghp_cursor_"
-KV_INITIALIZED_PREFIX = "ghp_initialized_"
+# 订阅数据存储文件名
+SUBS_FILE = "subscriptions.json"
 
 # 扫描窗口硬上限
 MAX_SCAN_ENTRIES = 50
 
-# 仓库名校验
+# 正则
 RE_REPO = re.compile(r"^[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+$")
-# 监听项格式: owner/repo:type
 RE_WATCH_ITEM = re.compile(r"^([a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+):(issues|commits|releases)$")
-# 组织项目监听项格式: org/project_number
 RE_PROJECT_ITEM = re.compile(r"^([a-zA-Z0-9._-]+)/(\d+)$")
+
+
+def is_user_allowed(plugin, event: AstrMessageEvent) -> bool:
+    """权限检查：管理员或白名单内用户"""
+    try:
+        if event.is_admin():
+            return True
+        whitelist = getattr(plugin, "whitelist", None)
+        if whitelist is None:
+            whitelist = plugin.config.get("whitelist", [])
+        if not whitelist:
+            return True
+        return event.get_sender_id() in whitelist
+    except Exception:
+        return True
+
+
+def get_session_id(event: AstrMessageEvent) -> str:
+    """获取当前会话的 unified_msg_origin"""
+    return event.unified_msg_origin
 
 
 @register(
     "astrbot_plugin_private_github",
     "CecilyGao",
-    "通过 GitHub API 定时获取私有仓库动态（Issues/Commits/Releases/Projects）并推送到聊天会话",
-    "1.0.0",
+    "通过 GitHub API 定时获取私有仓库动态（Issues/Commits/Releases/Projects）并推送到聊天会话，支持多会话独立订阅",
+    "2.0.0",
     "https://github.com/CecilyGao/astrbot_plugin_private_github",
 )
 class GitHubPrivateListenPlugin(Star):
@@ -52,76 +71,109 @@ class GitHubPrivateListenPlugin(Star):
 
         self.poll_interval: int = max(config.get("poll_interval", 1800), 60)
         self.max_entries: int = max(config.get("max_entries", 5), 0)
-        self.cfg_bound_sessions: List[str] = config.get("bound_sessions", [])
         self.cfg_timezone: str = config.get("timezone", "Asia/Shanghai")
+        self.whitelist: List[str] = config.get("whitelist", [])
 
-        # 解析仓库监听项: List[(repo_full, event_type)]
-        self.watch_repos: List[Tuple[str, str]] = self._parse_watch_repos(config.get("watch_repos", []))
-        # 解析组织项目监听项: List[(org, project_number)]
-        self.watch_projects: List[Tuple[str, int]] = self._parse_watch_projects(config.get("watch_org_projects", []))
+        # 数据目录
+        self.data_dir = StarTools.get_data_dir("astrbot_plugin_private_github")
+        os.makedirs(self.data_dir, exist_ok=True)
+        self.subs_file = os.path.join(self.data_dir, SUBS_FILE)
+
+        # 会话订阅数据结构:
+        # {
+        #   "session_origin": [
+        #       {"type": "repo", "repo": "owner/repo", "event": "issues", "cursor": "xxx"},
+        #       {"type": "project", "org": "org", "number": 1, "cursor": "yyy"}
+        #   ]
+        # }
+        self.subscriptions: Dict[str, List[Dict]] = {}
 
         self._poll_task: Optional[asyncio.Task] = None
         self._http_session: Optional[aiohttp.ClientSession] = None
-        self._initialized_keys: set = set()
-        self._config_lock = asyncio.Lock()
+        self._load_subscriptions()
 
-    # ==================== 配置解析 ====================
+    # ==================== 数据持久化 ====================
 
-    def _parse_watch_repos(self, raw_items: List[str]) -> List[Tuple[str, str]]:
-        """解析仓库监听项"""
-        result = []
-        seen = set()
-        for item in raw_items:
-            if not isinstance(item, str):
-                continue
-            item = item.strip()
-            if not item:
-                continue
-            match = RE_WATCH_ITEM.match(item)
-            if not match:
-                logger.warning(f"[Private GitHub] 跳过非法仓库监听项: {item}")
-                continue
-            repo = match.group(1)
-            event_type = match.group(2)
-            key = f"{repo}:{event_type}"
-            if key in seen:
-                continue
-            seen.add(key)
-            result.append((repo, event_type))
-        return result
+    def _load_subscriptions(self):
+        """从文件加载订阅数据（不含 cursor，cursor 单独存在 KV 中）"""
+        if not os.path.exists(self.subs_file):
+            self.subscriptions = {}
+            return
+        try:
+            with open(self.subs_file, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            # 兼容旧格式：如果是 list，转为 dict
+            if isinstance(data, list):
+                # 旧版 bound_sessions 迁移，将其订阅项视为全局默认订阅？但旧版没有具体订阅项，忽略。
+                self.subscriptions = {}
+            else:
+                self.subscriptions = data
+            logger.info(f"[Private GitHub] 已加载 {len(self.subscriptions)} 个会话的订阅数据")
+        except Exception as e:
+            logger.error(f"[Private GitHub] 加载订阅数据失败: {e}")
+            self.subscriptions = {}
 
-    def _parse_watch_projects(self, raw_items: List[str]) -> List[Tuple[str, int]]:
-        """解析组织项目监听项"""
-        result = []
-        seen = set()
-        for item in raw_items:
-            if not isinstance(item, str):
-                continue
-            item = item.strip()
-            if not item:
-                continue
-            match = RE_PROJECT_ITEM.match(item)
-            if not match:
-                logger.warning(f"[Private GitHub] 跳过非法项目监听项: {item}，应为 org/number")
-                continue
-            org = match.group(1)
-            number = int(match.group(2))
-            key = f"{org}/{number}"
-            if key in seen:
-                continue
-            seen.add(key)
-            result.append((org, number))
-        return result
+    def _save_subscriptions(self):
+        """保存订阅数据（不含 cursor）"""
+        try:
+            # 深拷贝一份，排除 cursor 字段
+            to_save = {}
+            for session, items in self.subscriptions.items():
+                to_save[session] = []
+                for item in items:
+                    copy_item = item.copy()
+                    copy_item.pop("cursor", None)
+                    to_save[session].append(copy_item)
+            with open(self.subs_file, "w", encoding="utf-8") as f:
+                json.dump(to_save, f, ensure_ascii=False, indent=2)
+            logger.debug("[Private GitHub] 订阅数据已保存")
+        except Exception as e:
+            logger.error(f"[Private GitHub] 保存订阅数据失败: {e}")
 
-    # ==================== 初始化 & 生命周期 ====================
+    def _get_cursor_key(self, session: str, sub: Dict) -> str:
+        """生成 KV 中游标的唯一 key"""
+        if sub["type"] == "repo":
+            return f"{KV_LAST_CURSOR_PREFIX}{session}_{sub['repo']}_{sub['event']}"
+        else:  # project
+            return f"{KV_LAST_CURSOR_PREFIX}{session}_project_{sub['org']}_{sub['number']}"
+
+    async def _get_cursor(self, session: str, sub: Dict) -> str:
+        """获取订阅项的游标"""
+        key = self._get_cursor_key(session, sub)
+        return await self.get_kv_data(key, "")
+
+    async def _set_cursor(self, session: str, sub: Dict, cursor: str):
+        """设置订阅项的游标"""
+        key = self._get_cursor_key(session, sub)
+        await self.put_kv_data(key, cursor)
+
+    async def _init_subscription_cursor(self, session: str, sub: Dict):
+        """初始化新订阅的游标（最新一条动态的 ID）"""
+        try:
+            if sub["type"] == "repo":
+                latest = await self._fetch_latest_repo_entry(sub["repo"], sub["event"])
+            else:
+                latest = await self._fetch_latest_project_item(sub["org"], sub["number"])
+            if latest:
+                cursor = self._extract_cursor_from_entry(latest, sub["type"] if sub["type"] == "repo" else "project")
+                if cursor:
+                    await self._set_cursor(session, sub, cursor)
+                    logger.info(f"[Private GitHub] 初始化游标成功: {self._get_cursor_key(session, sub)} -> {cursor[:20]}...")
+                    return
+            # 如果没有获取到最新条目（空项目/仓库），设置一个占位符避免重复拉取全部历史
+            await self._set_cursor(session, sub, "__EMPTY__")
+            logger.warning(f"[Private GitHub] 无法获取最新条目，设置占位游标: {self._get_cursor_key(session, sub)}")
+        except Exception as e:
+            logger.error(f"[Private GitHub] 初始化游标失败: {e}")
+
+    # ==================== 生命周期 ====================
 
     async def initialize(self):
         if not self.github_token:
             logger.error("[Private GitHub] github_token 未配置，插件将无法正常工作")
         logger.info(
             f"[Private GitHub] 插件初始化，轮询间隔: {self.poll_interval} 秒，"
-            f"仓库监听项: {self.watch_repos}，项目监听项: {self.watch_projects}，"
-            f"绑定会话数: {len(self.cfg_bound_sessions)}"
+            f"已加载 {len(self.subscriptions)} 个会话的订阅"
         )
         self._http_session = aiohttp.ClientSession(
             headers={
@@ -130,44 +182,17 @@ class GitHubPrivateListenPlugin(Star):
             },
             timeout=aiohttp.ClientTimeout(total=30)
         )
-        await self._init_cursors()
+        # 为所有已存在的订阅初始化游标（如果尚未初始化）
+        await self._ensure_all_cursors()
         self._poll_task = asyncio.create_task(self._poll_loop())
 
-    async def _init_cursors(self):
-        """初始化所有监听项的游标"""
-        # 仓库监听项
-        for repo, event_type in self.watch_repos:
-            kv_key = self._get_repo_kv_key(repo, event_type)
-            await self._init_cursor(kv_key, repo, event_type)
-        # 项目监听项
-        for org, number in self.watch_projects:
-            kv_key = self._get_project_kv_key(org, number)
-            await self._init_cursor(kv_key, f"{org}/{number}", "project")
-
-    async def _init_cursor(self, kv_key: str, identifier: str, item_type: str):
-        if kv_key in self._initialized_keys:
-            return
-        init_flag = f"{KV_INITIALIZED_PREFIX}{kv_key}"
-        if await self.get_kv_data(init_flag, ""):
-            self._initialized_keys.add(kv_key)
-            return
-
-        # 尝试获取最新一条动态
-        if item_type == "project":
-            latest = await self._fetch_latest_project_item(identifier.split("/")[0], int(identifier.split("/")[1]))
-        else:
-            # 仓库监听: identifier 是 repo, item_type 是 event_type
-            latest = await self._fetch_latest_repo_entry(identifier, item_type)
-
-        if latest:
-            cursor = self._extract_cursor_from_entry(latest, item_type)
-            if cursor:
-                await self.put_kv_data(f"{KV_LAST_CURSOR_PREFIX}{kv_key}", cursor)
-                await self.put_kv_data(init_flag, "1")
-                self._initialized_keys.add(kv_key)
-                logger.info(f"[Private GitHub] 已初始化游标: {kv_key} -> {cursor[:20]}...")
-        else:
-            logger.warning(f"[Private GitHub] 初始化游标失败，将在下次重试: {identifier} ({item_type})")
+    async def _ensure_all_cursors(self):
+        """确保所有订阅项都有游标"""
+        for session, items in self.subscriptions.items():
+            for sub in items:
+                cursor = await self._get_cursor(session, sub)
+                if not cursor:
+                    await self._init_subscription_cursor(session, sub)
 
     async def terminate(self):
         if self._poll_task and not self._poll_task.done():
@@ -183,23 +208,14 @@ class GitHubPrivateListenPlugin(Star):
     # ==================== 辅助函数 ====================
 
     @staticmethod
-    def _get_repo_kv_key(repo: str, event_type: str) -> str:
-        return f"{repo.replace('/', '_')}_{event_type}"
-
-    @staticmethod
-    def _get_project_kv_key(org: str, number: int) -> str:
-        return f"project_{org}_{number}"
-
-    @staticmethod
     def _extract_cursor_from_entry(entry: Dict[str, Any], item_type: str) -> str:
-        if item_type == "issue" or item_type == "issues":
+        if item_type in ("issue", "issues", "repo"):
             return str(entry.get("id", ""))
-        elif item_type == "commit" or item_type == "commits":
+        elif item_type in ("commit", "commits"):
             return entry.get("sha", "")
-        elif item_type == "release" or item_type == "releases":
+        elif item_type in ("release", "releases"):
             return str(entry.get("id", ""))
         elif item_type == "project":
-            # 对于项目，使用 item 的 id 作为游标
             return entry.get("id", "")
         return ""
 
@@ -229,14 +245,12 @@ class GitHubPrivateListenPlugin(Star):
             body = entry.get("body", "") or ""
             return f"{name}: {body[:max_len]}".strip()
         elif event_type == "project":
-            # 项目项暂不提取详细内容，避免 GraphQL 复杂结构
             return ""
         return ""
 
     # ==================== GitHub API 请求 ====================
 
     async def _rest_api_get(self, url: str) -> Optional[List[Dict]]:
-        """REST API GET 请求"""
         if not self._http_session or self._http_session.closed:
             self._http_session = aiohttp.ClientSession(
                 headers={"Authorization": f"token {self.github_token}"},
@@ -260,7 +274,6 @@ class GitHubPrivateListenPlugin(Star):
             return None
 
     async def _graphql_request(self, query: str, variables: Dict = None) -> Optional[Dict]:
-        """GraphQL 请求"""
         if not self._http_session or self._http_session.closed:
             self._http_session = aiohttp.ClientSession(
                 headers={"Authorization": f"token {self.github_token}"},
@@ -292,11 +305,7 @@ class GitHubPrivateListenPlugin(Star):
             return data[0]
         return None
 
-    async def _fetch_new_repo_entries(self, repo: str, event_type: str) -> List[Dict]:
-        kv_key = self._get_repo_kv_key(repo, event_type)
-        full_cursor_key = f"{KV_LAST_CURSOR_PREFIX}{kv_key}"
-        last_cursor = await self.get_kv_data(full_cursor_key, "")
-
+    async def _fetch_new_repo_entries(self, repo: str, event_type: str, last_cursor: str) -> List[Dict]:
         per_page = MAX_SCAN_ENTRIES
         url = self._build_repo_api_url(repo, event_type, per_page=per_page)
         items = await self._rest_api_get(url)
@@ -317,8 +326,8 @@ class GitHubPrivateListenPlugin(Star):
 
         if new_entries and items:
             latest_cursor = self._extract_cursor_from_entry(items[0], event_type)
-            await self.put_kv_data(full_cursor_key, latest_cursor)
-        return new_entries
+            return new_entries, latest_cursor
+        return new_entries, last_cursor
 
     def _build_repo_api_url(self, repo: str, event_type: str, per_page: int = 30) -> str:
         base = f"{REST_API_BASE}/repos/{repo}"
@@ -363,14 +372,12 @@ class GitHubPrivateListenPlugin(Star):
     # ==================== 组织项目监听 (GraphQL) ====================
 
     async def _fetch_latest_project_item(self, org: str, number: int) -> Optional[Dict]:
-        """获取项目中最新的一个 item（按 updatedAt 降序）"""
         items = await self._fetch_project_items(org, number, first=1)
         if items:
             return items[0]
         return None
 
     async def _fetch_project_items(self, org: str, number: int, first: int = 50) -> List[Dict]:
-        """获取项目中的 items，手动按 updatedAt 降序排序（不使用 orderBy 以避免 schema 错误）"""
         query = """
         query($org: String!, $number: Int!, $first: Int!) {
           organization(login: $org) {
@@ -413,15 +420,10 @@ class GitHubPrivateListenPlugin(Star):
         if not project:
             return []
         items = project.get("items", {}).get("nodes", [])
-        # 手动按 updatedAt 降序排序，确保最新更新的在前
         items.sort(key=lambda x: x.get("updatedAt", ""), reverse=True)
         return items
 
-    async def _fetch_new_project_entries(self, org: str, number: int) -> List[Dict]:
-        kv_key = self._get_project_kv_key(org, number)
-        full_cursor_key = f"{KV_LAST_CURSOR_PREFIX}{kv_key}"
-        last_cursor = await self.get_kv_data(full_cursor_key, "")
-
+    async def _fetch_new_project_entries(self, org: str, number: int, last_cursor: str) -> List[Dict]:
         items = await self._fetch_project_items(org, number, first=MAX_SCAN_ENTRIES)
         if not items:
             return []
@@ -440,12 +442,10 @@ class GitHubPrivateListenPlugin(Star):
 
         if new_entries and items:
             latest_id = items[0].get("id", "")
-            if latest_id:
-                await self.put_kv_data(full_cursor_key, latest_id)
-        return new_entries
+            return new_entries, latest_id
+        return new_entries, last_cursor
 
     def _build_project_entry_dict(self, item: Dict, org: str, number: int) -> Dict:
-        """将 GraphQL 返回的项目 item 转为统一格式（不包含复杂字段）"""
         content = item.get("content")
         if not content:
             return {}
@@ -463,7 +463,7 @@ class GitHubPrivateListenPlugin(Star):
             number_str = f"#{content.get('number', '')}"
         elif typename == "DraftIssue":
             title = content.get("title", "无标题")
-            url = ""  # DraftIssue 没有 url 字段
+            url = ""
             item_type = "Draft Issue"
             number_str = ""
         else:
@@ -477,18 +477,17 @@ class GitHubPrivateListenPlugin(Star):
             "title": display_title,
             "link": url,
             "published": self._convert_time(item.get("updatedAt", item.get("createdAt", ""))),
-            "content": "",  # 暂不提取字段值
+            "content": "",
             "id": item.get("id", ""),
             "type": "project_item"
         }
 
-    # ==================== 定时轮询 ====================
+    # ==================== 轮询与推送 ====================
 
     async def _poll_loop(self):
         await asyncio.sleep(10)
         while True:
             try:
-                await self._init_cursors()
                 await self._do_poll()
             except asyncio.CancelledError:
                 logger.info("[Private GitHub] 轮询任务已取消")
@@ -498,58 +497,57 @@ class GitHubPrivateListenPlugin(Star):
             await asyncio.sleep(self.poll_interval)
 
     async def _do_poll(self):
-        if (not self.watch_repos and not self.watch_projects) or not self.cfg_bound_sessions or not self.github_token:
+        if not self.github_token:
             return
 
-        tasks = []
-        # 仓库监听
-        for repo, event_type in self.watch_repos:
-            kv_key = self._get_repo_kv_key(repo, event_type)
-            if kv_key in self._initialized_keys:
-                tasks.append((f"repo:{repo}:{event_type}", self._fetch_new_repo_entries(repo, event_type)))
-        # 项目监听
-        for org, number in self.watch_projects:
-            kv_key = self._get_project_kv_key(org, number)
-            if kv_key in self._initialized_keys:
-                tasks.append((f"project:{org}/{number}", self._fetch_new_project_entries(org, number)))
+        # 收集每个会话中所有订阅的待推送消息
+        # 结构: { session: [消息文本] }
+        messages_by_session: Dict[str, List[str]] = {}
 
-        if not tasks:
-            return
+        for session, items in list(self.subscriptions.items()):
+            for sub in items:
+                try:
+                    last_cursor = await self._get_cursor(session, sub)
+                    if not last_cursor:
+                        # 未初始化，尝试初始化（通常已在启动时完成，但以防订阅后未重启）
+                        await self._init_subscription_cursor(session, sub)
+                        continue
+                    if last_cursor == "__EMPTY__":
+                        # 空占位，跳过
+                        continue
 
-        # 并发执行
-        results = await asyncio.gather(
-            *[task[1] for task in tasks],
-            return_exceptions=True
-        )
+                    if sub["type"] == "repo":
+                        new_entries, new_cursor = await self._fetch_new_repo_entries(
+                            sub["repo"], sub["event"], last_cursor
+                        )
+                    else:
+                        new_entries, new_cursor = await self._fetch_new_project_entries(
+                            sub["org"], sub["number"], last_cursor
+                        )
 
-        send_tasks = []
-        for (label, _), result in zip(tasks, results):
-            if isinstance(result, Exception):
-                logger.error(f"[Private GitHub] 获取 {label} 失败: {result}")
-                continue
-            if not result:
-                continue
+                    if new_entries:
+                        # 格式化消息
+                        if sub["type"] == "repo":
+                            msg = self._format_repo_entries(sub["repo"], sub["event"], new_entries)
+                        else:
+                            msg = self._format_project_entries(f"{sub['org']}/{sub['number']}", new_entries)
+                        if msg:
+                            messages_by_session.setdefault(session, []).append(msg)
 
-            # 格式化消息
-            if label.startswith("repo:"):
-                _, repo, etype = label.split(":")
-                msg = self._format_repo_entries(repo, etype, result)
-            else:
-                _, proj = label.split(":")
-                msg = self._format_project_entries(proj, result)
+                        # 更新游标
+                        if new_cursor and new_cursor != last_cursor:
+                            await self._set_cursor(session, sub, new_cursor)
+                except Exception as e:
+                    logger.error(f"[Private GitHub] 处理订阅 {sub} 失败: {e}")
 
-            chain = MessageChain().message(msg)
-            for umo in self.cfg_bound_sessions:
-                send_tasks.append(self._safe_send(umo, chain))
-
-        if send_tasks:
-            await asyncio.gather(*send_tasks)
-
-    async def _safe_send(self, umo: str, chain: MessageChain):
-        try:
-            await self.context.send_message(umo, chain)
-        except Exception as e:
-            logger.error(f"[Private GitHub] 推送失败 ({umo}): {e}")
+        # 发送消息
+        for session, msg_list in messages_by_session.items():
+            full_msg = "\n\n".join(msg_list)
+            chain = MessageChain().message(full_msg)
+            try:
+                await self.context.send_message(session, chain)
+            except Exception as e:
+                logger.error(f"[Private GitHub] 推送到 {session} 失败: {e}")
 
     # ==================== 消息格式化 ====================
 
@@ -586,157 +584,169 @@ class GitHubPrivateListenPlugin(Star):
             lines.append("")
         return "\n".join(lines)
 
-    @staticmethod
-    def _format_single_check_repo(repo: str, event_type: str, entries: List[Dict]) -> str:
-        if not entries:
-            return f"🔍 仓库 {repo} 暂无最近的 {event_type} 动态。"
-        type_icon = {"issues": "🐛", "commits": "📝", "releases": "📦"}.get(event_type, "🔔")
-        lines = [f"{type_icon} 仓库 {repo} 最近的 {event_type} 动态：\n"]
-        for i, entry in enumerate(entries, 1):
-            lines.append(f"  {i}. {entry['title']}")
-            if entry["published"]:
-                lines.append(f"     🕐 {entry['published']}")
-            if entry["content"]:
-                lines.append(f"     📝 {entry['content']}")
-            if entry["link"]:
-                lines.append(f"     🔗 {entry['link']}")
-            lines.append("")
-        return "\n".join(lines)
+    # ==================== 订阅管理指令 ====================
 
-    @staticmethod
-    def _format_single_check_project(project_id: str, entries: List[Dict]) -> str:
-        if not entries:
-            return f"🔍 项目 {project_id} 暂无最近的卡片动态。"
-        lines = [f"📌 项目 {project_id} 最近的卡片：\n"]
-        for i, entry in enumerate(entries, 1):
-            lines.append(f"  {i}. {entry['title']}")
-            if entry["published"]:
-                lines.append(f"     🕐 {entry['published']}")
-            if entry["content"]:
-                lines.append(f"     📝 {entry['content']}")
-            if entry["link"]:
-                lines.append(f"     🔗 {entry['link']}")
-            lines.append("")
-        return "\n".join(lines)
-
-    # ==================== 指令处理 ====================
-
-    @filter.command("ghp_list")
-    async def ghp_list(self, event: AstrMessageEvent):
-        """列出所有监听项及绑定会话"""
-        lines = ["📋 Private GitHub 监听列表\n"]
-        if self.watch_repos:
-            lines.append("仓库监听:")
-            for repo, etype in self.watch_repos:
-                lines.append(f"  📦 {repo} : {etype}")
-        if self.watch_projects:
-            lines.append("项目监听:")
-            for org, num in self.watch_projects:
-                lines.append(f"  📌 {org}/{num}")
-        if not self.watch_repos and not self.watch_projects:
-            lines.append("  暂无监听项，请在 WebUI 配置中设置 watch_repos 或 watch_org_projects")
-        lines.append(f"\n→ 推送到 {len(self.cfg_bound_sessions)} 个绑定会话")
-        lines.append(f"⏱️ 轮询间隔：{self.poll_interval} 秒")
-        yield event.plain_result("\n".join(lines))
-
-    @filter.command("ghp_check")
-    @filter.permission_type(filter.PermissionType.ADMIN)
-    async def ghp_check(self, event: AstrMessageEvent):
-        """手动检查指定仓库或项目的最新动态
-        用法：
-          /ghp_check repo owner/repo issues
-          /ghp_check repo owner/repo commits
-          /ghp_check repo owner/repo releases
-          /ghp_check project org/number
-        """
-        parts = event.message_str.strip().split()
-        if len(parts) < 2:
-            yield event.plain_result(
-                "❌ 用法错误，示例：\n"
-                "  /ghp_check repo nju-mc-org/server_document issues\n"
-                "  /ghp_check project my-org/1"
-            )
-            return
-
-        if parts[1] == "repo":
-            if len(parts) < 4:
-                yield event.plain_result("❌ 仓库用法: /ghp_check repo owner/repo issues|commits|releases")
+    async def _add_subscription(self, event: AstrMessageEvent, sub_type: str, *args):
+        """通用添加订阅逻辑"""
+        session = get_session_id(event)
+        if sub_type == "repo":
+            if len(args) < 2:
+                yield event.plain_result("❌ 用法: ghp_subscribe repo <owner/repo> <issues|commits|releases>")
                 return
-            repo = parts[2]
-            event_type = parts[3].lower()
+            repo = args[0]
+            event_type = args[1].lower()
             if not RE_REPO.match(repo):
                 yield event.plain_result("❌ 仓库格式不正确，应为 owner/repo")
                 return
             if event_type not in ("issues", "commits", "releases"):
                 yield event.plain_result("❌ 事件类型必须为 issues / commits / releases 之一")
                 return
-
-            yield event.plain_result(f"🔄 正在获取 {repo} 的 {event_type} 动态...")
-            url = self._build_repo_api_url(repo, event_type, per_page=self.max_entries or 10)
-            items = await self._rest_api_get(url)
-            if items is None:
-                yield event.plain_result("❌ 无法获取数据，请检查仓库名及 token 权限")
+            # 检查是否已订阅
+            for sub in self.subscriptions.get(session, []):
+                if sub.get("type") == "repo" and sub["repo"] == repo and sub["event"] == event_type:
+                    yield event.plain_result(f"⚠️ 当前会话已订阅 {repo} 的 {event_type} 动态")
+                    return
+            new_sub = {"type": "repo", "repo": repo, "event": event_type}
+        elif sub_type == "project":
+            if len(args) < 1:
+                yield event.plain_result("❌ 用法: ghp_subscribe project <org/number>")
                 return
-            entries = []
-            for item in items[:self.max_entries or 10]:
-                entry = self._build_repo_entry_dict(item, event_type)
-                if entry:
-                    entries.append(entry)
-            yield event.plain_result(self._format_single_check_repo(repo, event_type, entries))
-
-        elif parts[1] == "project":
-            if len(parts) < 3:
-                yield event.plain_result("❌ 项目用法: /ghp_check project org/number")
-                return
-            proj_str = parts[2]
+            proj_str = args[0]
             match = RE_PROJECT_ITEM.match(proj_str)
             if not match:
                 yield event.plain_result("❌ 项目格式不正确，应为 org/number，如 my-org/1")
                 return
-            org = match.group(1)
-            number = int(match.group(2))
-
-            yield event.plain_result(f"🔄 正在获取项目 {org}/{number} 的最新卡片...")
-            items = await self._fetch_project_items(org, number, first=self.max_entries or 10)
-            if not items:
-                yield event.plain_result("❌ 无法获取项目数据，请检查组织名、项目编号及 token 权限")
-                return
-            entries = []
-            for item in items[:self.max_entries or 10]:
-                entry = self._build_project_entry_dict(item, org, number)
-                if entry:
-                    entries.append(entry)
-            yield event.plain_result(self._format_single_check_project(f"{org}/{number}", entries))
-
+            org, num = match.group(1), int(match.group(2))
+            for sub in self.subscriptions.get(session, []):
+                if sub.get("type") == "project" and sub["org"] == org and sub["number"] == num:
+                    yield event.plain_result(f"⚠️ 当前会话已订阅项目 {org}/{num}")
+                    return
+            new_sub = {"type": "project", "org": org, "number": num}
         else:
-            yield event.plain_result("❌ 第二个参数必须是 repo 或 project")
-            
+            yield event.plain_result("❌ 未知订阅类型")
+            return
+
+        # 保存订阅
+        if session not in self.subscriptions:
+            self.subscriptions[session] = []
+        self.subscriptions[session].append(new_sub)
+        self._save_subscriptions()
+
+        # 初始化游标（不会立即推送旧数据）
+        await self._init_subscription_cursor(session, new_sub)
+
+        yield event.plain_result(f"✅ 已成功订阅：{self._format_sub(new_sub)}")
+
+    @filter.command("ghp_subscribe")
+    async def ghp_subscribe(self, event: AstrMessageEvent):
+        """订阅 GitHub 动态
+        用法:
+          ghp_subscribe repo <owner/repo> <issues|commits|releases>
+          ghp_subscribe project <org/number>
+        """
+        if not is_user_allowed(self, event):
+            yield event.plain_result("❌ 你没有权限使用此指令")
+            return
+        parts = event.message_str.strip().split()
+        if len(parts) < 3:
+            yield event.plain_result("❌ 用法错误，详见 /help ghp_subscribe")
+            return
+        sub_type = parts[1]
+        args = parts[2:]
+        async for result in self._add_subscription(event, sub_type, *args):
+            yield result
+
+    @filter.command("ghp_unsubscribe")
+    async def ghp_unsubscribe(self, event: AstrMessageEvent, index: int = None):
+        """取消订阅
+        用法: ghp_unsubscribe <序号>   (序号通过 ghp_list_subs 查看)
+        """
+        if not is_user_allowed(self, event):
+            yield event.plain_result("❌ 你没有权限使用此指令")
+            return
+        session = get_session_id(event)
+        items = self.subscriptions.get(session, [])
+        if not items:
+            yield event.plain_result("当前会话没有任何订阅")
+            return
+
+        if index is None:
+            # 显示订阅列表供选择
+            msg = "📋 当前会话的订阅列表：\n"
+            for i, sub in enumerate(items, 1):
+                msg += f"{i}. {self._format_sub(sub)}\n"
+            msg += "请使用 ghp_unsubscribe <序号> 取消对应的订阅"
+            yield event.plain_result(msg)
+            return
+
+        try:
+            idx = int(index) - 1
+            if idx < 0 or idx >= len(items):
+                yield event.plain_result(f"❌ 序号无效，请输入 1-{len(items)} 之间的数字")
+                return
+            removed = items.pop(idx)
+            if not items:
+                del self.subscriptions[session]
+            self._save_subscriptions()
+            # 可选：删除游标 KV 数据（保留也可）
+            key = self._get_cursor_key(session, removed)
+            await self.put_kv_data(key, "")  # 清空
+            yield event.plain_result(f"✅ 已取消订阅：{self._format_sub(removed)}")
+        except ValueError:
+            yield event.plain_result("❌ 序号必须为数字")
+
+    @filter.command("ghp_list_subs")
+    async def ghp_list_subs(self, event: AstrMessageEvent):
+        """列出当前会话的所有订阅"""
+        if not is_user_allowed(self, event):
+            yield event.plain_result("❌ 你没有权限使用此指令")
+            return
+        session = get_session_id(event)
+        items = self.subscriptions.get(session, [])
+        if not items:
+            yield event.plain_result("当前会话没有任何订阅。使用 ghp_subscribe 添加订阅。")
+            return
+        msg = "📋 当前会话的订阅列表：\n"
+        for i, sub in enumerate(items, 1):
+            msg += f"{i}. {self._format_sub(sub)}\n"
+        yield event.plain_result(msg)
+
+    def _format_sub(self, sub: Dict) -> str:
+        if sub["type"] == "repo":
+            return f"仓库 {sub['repo']} 的 {sub['event']} 动态"
+        else:
+            return f"项目 {sub['org']}/{sub['number']} 的卡片动态"
+
+    # 可选：提供手动立即检查所有订阅的指令（管理员）
+    @filter.command("ghp_pushnow")
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    async def ghp_pushnow(self, event: AstrMessageEvent):
+        """立即执行一次全局推送（检查所有会话的所有订阅）"""
+        if not self.github_token:
+            yield event.plain_result("❌ 未配置 github_token，无法执行推送")
+            return
+        yield event.plain_result("🔄 正在立即检查所有订阅并推送...")
+        try:
+            await self._do_poll()
+            yield event.plain_result("✅ 推送完成（如有新动态已发送）")
+        except Exception as e:
+            logger.error(f"[Private GitHub] 手动推送失败: {e}")
+            yield event.plain_result(f"❌ 推送过程中发生错误: {e}")
+
+    # 保留旧的兼容指令（可选）
+    @filter.command("ghp_list")
+    async def ghp_list(self, event: AstrMessageEvent):
+        """兼容旧指令，现在推荐使用 ghp_list_subs 查看本会话订阅"""
+        yield event.plain_result(
+            "💡 新版插件支持多会话独立订阅，请使用 ghp_list_subs 查看当前会话的订阅。"
+            "全局监听列表已废弃。"
+        )
+
     @filter.command("ghp_bindhere")
     @filter.permission_type(filter.PermissionType.ADMIN)
     async def ghp_bindhere(self, event: AstrMessageEvent):
-        """绑定当前会话为推送目标"""
-        umo = event.unified_msg_origin
-        async with self._config_lock:
-            if umo in self.cfg_bound_sessions:
-                yield event.plain_result("⚠️ 当前会话已在绑定列表中")
-                return
-            self.cfg_bound_sessions.append(umo)
-            self.config["bound_sessions"] = self.cfg_bound_sessions
-            self.config.save_config()
         yield event.plain_result(
-            f"✅ 已绑定当前会话为推送目标\n会话标识：{umo}\n当前共 {len(self.cfg_bound_sessions)} 个绑定会话"
+            "⚠️ 此指令已废弃。现在每个会话自动独立管理订阅，无需绑定。请使用订阅指令：\n"
+            "ghp_subscribe repo owner/repo issues\n"
+            "ghp_subscribe project org/number"
         )
-
-    @filter.command("ghp_unbindhere")
-    @filter.permission_type(filter.PermissionType.ADMIN)
-    async def ghp_unbindhere(self, event: AstrMessageEvent):
-        """解绑当前会话"""
-        umo = event.unified_msg_origin
-        async with self._config_lock:
-            if umo not in self.cfg_bound_sessions:
-                yield event.plain_result("⚠️ 当前会话不在绑定列表中")
-                return
-            self.cfg_bound_sessions.remove(umo)
-            self.config["bound_sessions"] = self.cfg_bound_sessions
-            self.config.save_config()
-        yield event.plain_result(f"✅ 已解绑当前会话\n剩余 {len(self.cfg_bound_sessions)} 个绑定会话")
