@@ -79,7 +79,7 @@ ghp_subscribe project AstrBotDevs/3
 ## 🙏 致谢
 
 - 感谢 [astrbot_plugin_listen_github](https://github.com/aliveriver/astrbot_plugin_listen_github) 插件，为本项目提供了架构参考和灵感。
-- 感谢 [reminder 插件](https://github.com/Soulter/astrbot_plugin_reminder) 的设计思路与架构启发，为本插件的多会话订阅管理提供了重要参考。
+- 感谢 [reminder](https://github.com/Soulter/astrbot_plugin_reminder) 插件的设计思路与架构启发，为本插件的多会话订阅管理提供了重要参考。
 
 ## ⚠️ 注意事项
 
