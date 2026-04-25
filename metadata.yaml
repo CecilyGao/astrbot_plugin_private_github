@@ -1,7 +1,7 @@
-name: astrbot_plugin_listen_github
-display_name: GitHub 动态监听
-desc: 通过 RSS 定时获取 GitHub 用户/仓库动态并推送到聊天会话
-version: v1.0.1
-author: aliveriver
-repo: https://github.com/aliveriver/astrbot_plugin_listen_github
+name: astrbot_plugin_private_github
+display_name: GitHub 私有仓库动态推送
+desc: 通过 GitHub API 定时获取私有仓库动态（Issues/Commits/Releases/Projects）并推送到聊天会话
+version: v1.0.0
+author: CecilyGao
+repo: https://github.com/CecilyGao/astrbot_plugin_private_github
 astrbot_version: ">=4.9.2"
