@@ -1,6 +1,6 @@
 # 🔐 AstrBot 私有 GitHub 动态监听插件
 
-**只要你的GitHub Personal Access Token有权限就能视奸，赶快看看诡秘在搞什么名堂😈**
+**只要你的GitHub Personal Access Token有权限就能视奸别人的private仓库，赶快看看好闺蜜在搞什么名堂😈**
 
 通过 GitHub REST API 和 GraphQL API 定时获取私有仓库及组织项目（Projects v2）的动态，自动推送到绑定的聊天会话。支持 Personal Access Token 认证，可用于私有仓库、内部项目看板的实时监控。
 
