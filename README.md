@@ -1,4 +1,4 @@
-# 🔐 AstrBot 私有 GitHub 动态监听插件
+# 🔐 GitHub Private Repository 动态监听插件
 
 **只要你的GitHub Personal Access Token有权限就能视奸别人的private仓库，赶快看看好闺蜜在搞什么名堂😈**
 
@@ -27,6 +27,19 @@
 | `ghp_bindhere` | 管理员 | 将当前会话绑定为推送目标 |
 | `ghp_unbindhere` | 管理员 | 解绑当前会话 |
 
+### 指令示例
+
+```
+ghp_check repo AstrBotDevs/AstrBot issues —— 视奸 Astrbot 团队收到的小纸条
+
+ghp_check repo AstrBotDevs/AstrBot commits —— 视奸 Astrbot 团队提交了什么修改
+
+ghp_check repo AstrBotDevs/AstrBot releases —— 视奸 Astrbot 新版本
+
+ghp_check project AstrBotDevs/1 —— 视奸 Astrbot 团队的1号项目动态
+
+```
+
 ## ⚙️ 配置项
 
 在 AstrBot WebUI 插件配置页面可设置：
@@ -49,12 +62,40 @@
     "poll_interval": 900,
     "max_entries": 5,
     "watch_repos": [
-        "nju-mc-org/server_document:issues",
-        "my-org/private-repo:commits"
+        "AstrBotDevs/AstrBot:issues",
+        "AstrBotDevs/AstrBot:commits"
     ],
     "watch_org_projects": [
-        "nju-mc-org/4"
+        "AstrBotDevs/1"
     ],
     "timezone": "Asia/Shanghai",
     "bound_sessions": []
 }
+```
+## 👥 贡献指南
+
+-🌟 Star 这个项目！（点右上角的星星，感谢支持！）
+
+-🐛 提交 Issue 报告问题
+
+-💡 提出新功能建议
+
+-🔧 提交 Pull Request 改进代码
+
+## 🙏 致谢
+
+- 😋 感谢 [aliveriver](https://github.com/aliveriver) 的 [astrbot_plugin_listen_github](https://github.com/aliveriver/astrbot_plugin_listen_github) 插件，为本项目提供了架构参考和灵感。建议搭配食用，就能视奸遍天下了。
+
+## ⚠️ 注意事项
+
+1. **Token 权限要求**：Personal Access Token 必须勾选 `repo`（完全控制私有仓库）、`read:org`（读取组织信息）和 `project`（访问项目）。如果组织启用了 SAML SSO，需要先授权该 Token。
+
+2. **项目编号获取**：组织项目的编号请在浏览器地址栏查看，例如 `https://github.com/orgs/nju-mc-org/projects/4` 中的 `4` 即为项目编号。配置时写入 `nju-mc-org/4`。
+
+3. **API 限流**：GitHub REST API 的 Token 限频为每小时 5000 次请求，GraphQL 节点数也有一定限制。插件内置了扫描窗口上限（`MAX_SCAN_ENTRIES = 50`），避免单次轮询请求过多。建议轮询间隔不要低于 600 秒（10 分钟）。
+
+4. **项目卡片更新检测**：插件通过比较项目的 `updatedAt` 时间戳来判断是否有新卡片，仅推送新增或最近更新的项目卡片。目前未支持监听卡片内字段值的变更（如状态从“待办”变为“进行中”）。
+
+5. **Draft Issue 无法提供链接**：GitHub GraphQL API 中的 Draft Issue 没有 `url` 字段，因此推送时不会附带链接，需要用户直接在项目网页中查看。
+
+6. **合法合规使用**：请确保使用本插件遵守 GitHub 服务条款及适用的法律法规。不得有利用本插件对其他用户造成侵权、对 GitHub API 进行高频请求、爬取数据或任何可能对 GitHub 服务造成压力的行为。用户应自行承担因滥用产生的责任。
