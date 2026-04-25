@@ -1,6 +1,6 @@
-# 🔐 GitHub Private Repository 动态监听插件
+# 🔐 GitHub 仓库动态监听插件
 
-**只要你的GitHub Personal Access Token有权限就能视奸别人的private仓库，赶快看看好闺蜜在搞什么名堂😈**
+**只要你的GitHub Personal Access Token有权限就能视奸别人的仓库，赶快看看好闺蜜在搞什么名堂😈**
 
 通过 GitHub REST API 和 GraphQL API 定时获取私有仓库及组织项目（Projects v2）的动态，自动推送到绑定的聊天会话。支持 Personal Access Token 认证，可用于**公开**仓库（Public Repository）、**私有**仓库（Private Repository）、项目动态（Projects）的实时监控。
 
@@ -55,7 +55,7 @@ ghp_check project AstrBotDevs/1 —— ~~视奸~~观察 Astrbot 团队的1号项
 
 ```json
 {
-    "github_token": "ghp_your_token_here",
+    "github_token": "ghp_1145141919810",
     "poll_interval": 900,
     "max_entries": 5,
     "watch_repos": [
@@ -82,7 +82,7 @@ ghp_check project AstrBotDevs/1 —— ~~视奸~~观察 Astrbot 团队的1号项
 
 ## 🙏 致谢
 
-- 😋 感谢 [aliveriver](https://github.com/aliveriver) 的 [astrbot_plugin_listen_github](https://github.com/aliveriver/astrbot_plugin_listen_github) 插件，为本项目提供了架构参考和灵感。建议搭配食用，~~就能视奸遍天下了~~。
+- 😋 感谢 [aliveriver](https://github.com/aliveriver) 的 [astrbot_plugin_listen_github](https://github.com/aliveriver/astrbot_plugin_listen_github) 插件，为本项目提供了架构参考和灵感，建议搭配食用喵。
 
 ## ⚠️ 注意事项
 
