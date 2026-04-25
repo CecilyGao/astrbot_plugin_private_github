@@ -12,30 +12,31 @@
 - ⏱️ **定时轮询** — 可自定义轮询间隔（默认 30 分钟，最低 60 秒）
 - 🌐 **多会话推送** — 支持绑定多个聊天会话
 - 🕐 **时区转换** — 自动将 GitHub 时间转为本地时区
-- 🔒 **权限控制** — 关键指令仅管理员可用
-- 🚀 **并发拉取推送** — 多目标并行处理，高效不阻塞
-- 🛡️ **输入校验** — 仓库名/项目编号合法性检查，无效项自动跳过
-- 🔐 **并发安全** — 配置写入加锁，避免竞态条件
+- 🗂️ **多会话独立订阅** — 每个群聊/私聊可独立添加/取消订阅，互不干扰
+- 🔒 **权限控制** — 可配置白名单，控制普通用户使用订阅指令
 
 ## 📋 可用指令
 
 | 指令 | 权限 | 说明 |
 |------|------|------|
-| `ghp_list` | 所有人 | 列出所有监听项和绑定会话数 |
 | `ghp_check repo <owner/repo> <issues\|commits\|releases>` | 管理员 | 立即查看某仓库的最新动态 |
 | `ghp_check project <org/number>` | 管理员 | 立即查看某组织项目的最新卡片 |
-| `ghp_bindhere` | 管理员 | 将当前会话绑定为推送目标 |
-| `ghp_unbindhere` | 管理员 | 解绑当前会话 |
+| `ghp_subscribe repo <owner/repo> <issues\|commits\|releases>` | 白名单成员或管理员 | 订阅仓库动态 |
+| `ghp_subscribe project <org/number>` | 同上 | 订阅组织项目卡片 |
+| `ghp_unsubscribe <序号>` | 同上 | 取消当前会话中指定序号的订阅 |
+| `ghp_list_subs` | 同上 | 列出当前会话的所有订阅 |
+| ~~`/ghp_list`~~ | 所有人 | 已废弃，请用 `/ghp_list_subs` |
+| ~~`/ghp_bindhere`~~ | 管理员 | 已废弃，现在每个会话自动独立管理 |
 
 ### 指令示例
 
-ghp_check repo AstrBotDevs/AstrBot issues —— ~~视奸~~观察 Astrbot 团队收到的小纸条
+ghp_check repo AstrBotDevs/AstrBot issues —— 立刻推送 Astrbot 团队最新收到的小纸条
 
-ghp_check repo AstrBotDevs/AstrBot commits —— ~~视奸~~观察 Astrbot 团队提交了什么修改
+ghp_subscribe repo AstrBotDevs/AstrBot commits —— 监听并推送 Astrbot 团队提交的新修改
 
-ghp_check repo AstrBotDevs/AstrBot releases —— ~~视奸~~观察 Astrbot 新版本
+ghp_check project AstrBotDevs/1 —— 立刻推送 Astrbot 团队1号项目的最新动态
 
-ghp_check project AstrBotDevs/1 —— ~~视奸~~观察 Astrbot 团队的1号项目动态
+ghp_subscribe project AstrBotDevs/3 —— 监听并推送 Astrbot 团队3号项目的最新动态
 
 ## ⚙️ 配置项
 
@@ -46,10 +47,8 @@ ghp_check project AstrBotDevs/1 —— ~~视奸~~观察 Astrbot 团队的1号项
 | `github_token` | string | 空 | GitHub Personal Access Token，需具有 `repo`、`read:org`、`project` 权限 |
 | `poll_interval` | int | 1800 | 轮询间隔（秒），建议不低于 600 秒 |
 | `max_entries` | int | 5 | 每次推送的最大条目数，设为 0 不限制 |
-| `watch_repos` | list | [] | 监听的仓库及事件类型，格式 `owner/repo:type`，type 可选 `issues`、`commits`、`releases` |
-| `watch_org_projects` | list | [] | 监听的 GitHub 组织项目，格式 `org/number`，项目编号在 URL 中查看 |
 | `timezone` | string | Asia/Shanghai | 时间显示时区 |
-| `bound_sessions` | list | [] | 推送目标会话（也可用 `/ghp_bindhere` 绑定） |
+| `whitelist` | list | [] | 允许使用订阅指令的普通用户 ID 列表，留空则所有用户均可使用（不建议） |
 
 ### 配置示例
 
@@ -70,6 +69,14 @@ ghp_check project AstrBotDevs/1 —— ~~视奸~~观察 Astrbot 团队的1号项
 }
 ```
 
+## 📦 升级指南（从 v1.0.0 升级）
+
+1. **备份原配置**（可选）
+2. **更新本插件**
+3. **重新添加订阅**：在每个需要推送的会话中重新使用 `ghp_subscribe` 添加订阅
+
+> 旧版绑定的会话和监听项不会自动迁移，请手动重新订阅。
+
 ## 👥 贡献指南
 
 -🌟 Star 这个项目！（点右上角的星星，感谢支持！）
@@ -82,7 +89,9 @@ ghp_check project AstrBotDevs/1 —— ~~视奸~~观察 Astrbot 团队的1号项
 
 ## 🙏 致谢
 
-- 😋 感谢 [aliveriver](https://github.com/aliveriver) 的 [astrbot_plugin_listen_github](https://github.com/aliveriver/astrbot_plugin_listen_github) 插件，为本项目提供了架构参考和灵感，建议搭配食用喵。
+- 😋 感谢 [astrbot_plugin_listen_github](https://github.com/aliveriver/astrbot_plugin_listen_github) 插件，为本项目提供了架构参考和灵感，建议搭配食用喵。
+
+- 感谢 [reminder](https://github.com/Soulter/astrbot_plugin_reminder) 插件的设计思路与架构启发，为本插件的多会话订阅管理提供了重要参考。
 
 ## ⚠️ 注意事项
 
