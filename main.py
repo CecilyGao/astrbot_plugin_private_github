@@ -710,27 +710,7 @@ class GitHubPrivateListenPlugin(Star):
 
         else:
             yield event.plain_result("❌ 第二个参数必须是 repo 或 project")
-
-    @filter.command("ghp_pushnow")
-    @filter.permission_type(filter.PermissionType.ADMIN)
-    async def ghp_pushnow(self, event: AstrMessageEvent):
-        """立即执行一次全局推送（检查所有监听项，并向绑定会话发送新动态）"""
-        if not self.github_token:
-            yield event.plain_result("❌ 未配置 github_token，无法执行推送")
-            return
-        if not self.cfg_bound_sessions:
-            yield event.plain_result("⚠️ 没有绑定的会话，请先使用 /ghp_bindhere 绑定")
-            return
-
-        yield event.plain_result("🔄 正在立即检查所有监听项并推送...")
-        try:
-            await self._init_cursors()
-            await self._do_poll()
-            yield event.plain_result("✅ 推送完成（如有新动态已发送）")
-        except Exception as e:
-            logger.error(f"[Private GitHub] 手动推送失败: {e}")
-            yield event.plain_result(f"❌ 推送过程中发生错误: {e}")
-
+            
     @filter.command("ghp_bindhere")
     @filter.permission_type(filter.PermissionType.ADMIN)
     async def ghp_bindhere(self, event: AstrMessageEvent):
