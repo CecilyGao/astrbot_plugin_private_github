@@ -82,7 +82,7 @@ ghp_check project AstrBotDevs/1 —— ~~视奸~~观察 Astrbot 团队的1号项
 
 ## 🙏 致谢
 
-- 😋 感谢 [aliveriver](https://github.com/aliveriver) 的 [astrbot_plugin_listen_github](https://github.com/aliveriver/astrbot_plugin_listen_github) 插件，为本项目提供了架构参考和灵感。建议搭配食用，~~就能视奸遍天下了。~~
+- 😋 感谢 [aliveriver](https://github.com/aliveriver) 的 [astrbot_plugin_listen_github](https://github.com/aliveriver/astrbot_plugin_listen_github) 插件，为本项目提供了架构参考和灵感。建议搭配食用，~~就能视奸遍天下了~~。
 
 ## ⚠️ 注意事项
 
