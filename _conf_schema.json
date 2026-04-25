@@ -3,25 +3,25 @@
         "description": "GitHub Personal Access Token",
         "type": "string",
         "default": "",
-        "hint": "用于访问私有仓库和组织项目，格式ghp_xxxxxxxxxxxx，需具有 repo、read:org、project 权限"
+        "hint": "用于访问私有仓库和组织项目，格式ghp_xxxxxxxxxxxx，需具有repo、read:org、project 权限"
     },
     "poll_interval": {
         "description": "轮询间隔（秒）",
         "type": "int",
         "default": 1800,
-        "hint": "每隔多少秒检查一次动态，默认 1800 秒（30 分钟），建议不低于 600 秒"
+        "hint": "每隔多少秒检查一次动态，默认1800秒（30分钟），建议不低于600秒"
     },
     "max_entries": {
         "description": "每次最多推送条目数",
         "type": "int",
         "default": 5,
-        "hint": "单次推送每个监听项最多显示多少条新动态，设为 0 则不限制"
+        "hint": "单次推送每个监听项最多显示多少条新动态，设为0则不限制"
     },
     "watch_repos": {
         "description": "监听的 GitHub 仓库及事件类型",
         "type": "list",
         "default": [],
-        "hint": "格式为 'owner/repo:type'，type 可选 issues / commits / releases，例如 'nju-mc-org/server_document:issues'。可重复添加同一仓库的不同类型"
+        "hint": "格式为 'owner/repo:type'，type可选issues/commits/releases，例如 'nju-mc-org/server_document:issues'。可重复添加同一仓库的不同类型"
     },
     "watch_org_projects": {
         "description": "监听的 GitHub 组织项目 (Projects v2)",
@@ -39,6 +39,6 @@
         "description": "绑定的推送会话列表",
         "type": "list",
         "default": [],
-        "hint": "填写要推送的会话 UMO，可通过 ghp_bindhere 指令自动绑定当前会话"
+        "hint": "填写要推送的会话 UMO，可通过ghp_bindhere指令自动绑定当前会话"
     }
 }
