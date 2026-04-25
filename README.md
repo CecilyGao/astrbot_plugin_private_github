@@ -96,9 +96,9 @@ ghp_check project AstrBotDevs/1 —— ~~视奸~~观察 Astrbot 团队的1号项
 curl -H "Authorization: token ghp_1145141919810" "https://api.github.com/repos/xxxx/xxxxxx/issues"
 ```
 
-返回了该仓库的 issues，则 ghp_1145141919810 是有访问 xxxxxx 仓库权限的，可以放心填在配置里。~~如果有人这么教我就好了😭~~
+返回了该仓库的 issues，则 ghp_1145141919810 是有访问 xxxxxx 仓库权限的，可以放心填在配置里。
 
-2. **项目编号获取**：组织项目的编号请在浏览器地址栏查看，例如 `https://github.com/orgs/nju-mc-org/projects/4` 中的 `4` 即为项目编号。配置时写入 `nju-mc-org/4`。
+2. **项目编号获取**：组织项目的编号请在浏览器地址栏查看，例如 `https://github.com/orgs/xxxx/projects/4` 中的 `4` 即为项目编号。配置时写入 `xxxx/4`。
 
 3. **API 限流**：GitHub REST API 的 Token 限频为每小时 5000 次请求，GraphQL 节点数也有一定限制。插件内置了扫描窗口上限（`MAX_SCAN_ENTRIES = 50`），避免单次轮询请求过多。建议轮询间隔不要低于 600 秒（10 分钟）。
 
