@@ -1,6 +1,6 @@
 name: astrbot_plugin_private_github
-display_name: GitHub 仓库动态推送
-desc: 通过 GitHub API 定时获取仓库动态（Issues/Commits/Releases/Projects）并推送到聊天会话，配置有权限的token可以访问私有仓库。
+display_name: GitHub 仓库动态监听插件
+desc: 通过 GitHub API 定时获取仓库动态（Issues/Commits/Releases/Projects）并推送到聊天会话，配置有权限的Personal Access Token可以访问私有仓库。
 version: v1.0.0
 author: CecilyGao
 repo: https://github.com/CecilyGao/astrbot_plugin_private_github
